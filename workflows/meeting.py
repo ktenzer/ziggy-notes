@@ -65,12 +65,16 @@ with workflow.unsafe.imports_passed_through():
         MeetingInput,
         MeetingResult,
         MeetingSummary,
+        MeetingUpdates,
         SpeakerMapEvent,
         SuggestionEvent,
+        SuggestionRow,
         SummaryEvent,
         SummaryInput,
         TranscriptChunk,
         TranscriptEvent,
+        TranscriptRow,
+        UpdatesCursor,
         default_label,
     )
 
@@ -125,6 +129,9 @@ class MeetingWorkflow:
         self._abort_requested = False
         self._last_analyzed_count = 0
         self._prior_titles: list[str] = []
+        # Surfaced suggestions retained for the get_updates Query (the UI polls
+        # these; they are also published on the suggestions stream topic).
+        self._suggestions: list[SuggestionEvent] = []
         # Resolved speaker label per chunk index. Starts as the source-based
         # default ("Temporal"/"Customer") and is upgraded to real names by the
         # identify_speakers Activity. _roster is the unique set for the UI.
@@ -156,17 +163,24 @@ class MeetingWorkflow:
         )
 
     @workflow.signal(name="stop_recording")
-    def stop_recording(self) -> None:
+    def stop_recording(self, *_args: object) -> None:
         # First stop = finalize (summarize + exit). A second stop = abort now
         # (cancel any in-flight finalize activity and exit immediately), which
         # matters if the summary LLM call is failing/retrying.
+        #
+        # ``*_args`` absorbs the stray ``None`` that the community Apple Swift
+        # SDK sends for a no-input signal (an empty, encoding-less payload that
+        # RobustPydanticPayloadConverter normalizes to ``binary/null`` -> None).
         if self._stop_requested:
             self._abort_requested = True
         self._stop_requested = True
 
     @workflow.signal(name="abort")
-    def abort(self) -> None:
-        """Force-exit now: cancel in-flight work and finish without waiting."""
+    def abort(self, *_args: object) -> None:
+        """Force-exit now: cancel in-flight work and finish without waiting.
+
+        ``*_args`` absorbs the Apple Swift SDK's no-input payload (see
+        ``stop_recording``)."""
         self._stop_requested = True
         self._abort_requested = True
 
@@ -184,6 +198,49 @@ class MeetingWorkflow:
     @workflow.query(name="get_summary")
     def get_summary(self) -> Optional[MeetingSummary]:
         return self._summary
+
+    @workflow.query(name="get_updates")
+    def get_updates(self, cursor: Optional[UpdatesCursor] = None) -> MeetingUpdates:
+        """Incremental snapshot for the polling UI. Returns transcript rows with
+        index >= since_chunk and suggestions beyond since_suggestion, plus the
+        full current label map/roster, state flags, and the summary once ready."""
+        cur = cursor or UpdatesCursor()
+        since_chunk = cur.since_chunk
+        since_suggestion = cur.since_suggestion
+        rows = [
+            TranscriptRow(
+                index=c.index,
+                speaker=self._label_for(c),
+                text=c.text,
+                start_seconds=c.start_seconds,
+                end_seconds=c.end_seconds,
+            )
+            for c in self._chunks
+            if c.index >= since_chunk
+        ]
+        new_suggestions = self._suggestions[since_suggestion:]
+        sugg_rows = [
+            SuggestionRow(
+                at_chunk=s.at_chunk,
+                kind=s.observation.kind,
+                title=s.observation.title,
+                detail=s.observation.detail,
+                priority=s.observation.priority,
+            )
+            for s in new_suggestions
+        ]
+        return MeetingUpdates(
+            state=self._state,
+            stop_requested=self._stop_requested,
+            abort_requested=self._abort_requested,
+            chunk_count=len(self._chunks),
+            suggestion_count=len(self._suggestions),
+            transcript=rows,
+            suggestions=sugg_rows,
+            labels=dict(self._labels),
+            roster=list(self._roster),
+            summary=self._summary,
+        )
 
     # -- helpers -------------------------------------------------------------
     def _label_for(self, chunk: TranscriptChunk) -> str:
@@ -317,9 +374,9 @@ class MeetingWorkflow:
             return
         for obs in result.observations:
             self._prior_titles.append(obs.title)
-            self._suggestions_topic.publish(
-                SuggestionEvent(at_chunk=len(self._chunks), observation=obs)
-            )
+            event = SuggestionEvent(at_chunk=len(self._chunks), observation=obs)
+            self._suggestions.append(event)
+            self._suggestions_topic.publish(event)
         self._state = "recording"
 
     async def _finish_or_abort(self, act, fallback):

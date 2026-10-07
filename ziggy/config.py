@@ -16,11 +16,48 @@ from __future__ import annotations
 import dataclasses
 import os
 
+from typing import Any, Sequence
+
+import temporalio.api.common.v1
 from temporalio.client import Client
-from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.contrib.pydantic import PydanticPayloadConverter, pydantic_data_converter
 from temporalio.converter import ExternalStorage
 
 from ziggy.storage import LocalDiskStorageDriver
+
+
+class RobustPydanticPayloadConverter(PydanticPayloadConverter):
+    """Pydantic payload converter that tolerates payloads with no ``encoding``.
+
+    The community Apple Swift SDK encodes a no-input Signal/Query as a single
+    empty ``Payload`` with *no* metadata (in particular, no ``encoding`` key)
+    rather than the standard ``binary/null`` payload. The stock converter raises
+    ``KeyError: Unknown payload encoding <unknown>`` on such a payload, which
+    makes the worker silently *drop* the signal -- so e.g. ``stop_recording``
+    sent from the Swift app never reaches the workflow.
+
+    We normalize any encoding-less payload to ``binary/null`` (which decodes to
+    ``None``) before delegating to the stock converter. The ``None`` is absorbed
+    by the ``*args`` on our no-argument Signal handlers.
+    """
+
+    def from_payloads(
+        self,
+        payloads: Sequence[temporalio.api.common.v1.Payload],
+        type_hints: list[type] | None = None,
+    ) -> list[Any]:
+        normalized = [self._normalize(p) for p in payloads]
+        return super().from_payloads(normalized, type_hints)
+
+    @staticmethod
+    def _normalize(
+        payload: temporalio.api.common.v1.Payload,
+    ) -> temporalio.api.common.v1.Payload:
+        if b"encoding" in payload.metadata:
+            return payload
+        # No encoding metadata (Apple SDK's empty Void payload). Treat it as the
+        # canonical "null" payload so it decodes to None instead of blowing up.
+        return temporalio.api.common.v1.Payload(metadata={"encoding": b"binary/null"})
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -115,12 +152,20 @@ def workflow_id_for(meeting_id: str) -> str:
 
 
 def build_data_converter():
-    """Pydantic data converter, optionally composed with External Storage."""
+    """Pydantic data converter, optionally composed with External Storage.
+
+    Uses :class:`RobustPydanticPayloadConverter` so no-input signals sent by the
+    community Apple Swift SDK (empty, encoding-less payloads) are not dropped.
+    """
+    base = dataclasses.replace(
+        pydantic_data_converter,
+        payload_converter_class=RobustPydanticPayloadConverter,
+    )
     if not EXTERNAL_STORAGE_ENABLED:
-        return pydantic_data_converter
+        return base
     driver = LocalDiskStorageDriver(PAYLOAD_STORE_DIR)
     return dataclasses.replace(
-        pydantic_data_converter,
+        base,
         external_storage=ExternalStorage(
             drivers=[driver],
             payload_size_threshold=PAYLOAD_THRESHOLD_BYTES,

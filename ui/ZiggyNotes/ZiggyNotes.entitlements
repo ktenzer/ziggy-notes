@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Dev tool: sandbox OFF so the app can spawn the Python worker (uv) and
+	     reach the filesystem/network. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<!-- Takes effect only under sandbox/hardened runtime; harmless otherwise.
+	     Lets the app (the TCC "responsible process" for the spawned worker)
+	     use the microphone. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

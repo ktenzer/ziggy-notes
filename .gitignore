@@ -1,4 +1,5 @@
 # Byte-compiled / optimized / DLL files
+out/
 __pycache__/
 *.py[codz]
 *$py.class
@@ -218,3 +219,39 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# -----------------------------------------------------------------------------
+# Swift / Xcode macOS app (ziggy-notes/ui)
+# -----------------------------------------------------------------------------
+
+# Swift Package Manager build artifacts, resolved dependency checkouts, and the
+# xcodebuild derivedDataPath (build_dmg.sh builds into ui/.build).
+.build/
+.swiftpm/
+
+# Generated Xcode project. XcodeGen regenerates it from ui/project.yml
+# (`xcodegen generate`), so project.yml is the source of truth, not the pbxproj.
+ui/*.xcodeproj/
+
+# Xcode user-specific state and build caches
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+DerivedData/
+*.moved-aside
+*.hmap
+
+# Build / archive products
+*.app
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# DMG and generated icon artifacts (build_dmg.sh output; the final DMG lands in
+# ~/Documents, but ignore any that end up in the tree)
+*.dmg
+*.icns
+
+# macOS Finder metadata
+.DS_Store

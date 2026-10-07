@@ -208,6 +208,55 @@ class MeetingResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Incremental polling snapshot (consumed by the macOS UI via the get_updates
+# Query). Kept small/bounded so the payload never trips the External Storage
+# claim-check -- clients that can't resolve offloaded payloads (e.g. the Swift
+# SDK) therefore always get inline, decodable JSON.
+# ---------------------------------------------------------------------------
+class TranscriptRow(BaseModel):
+    index: int
+    speaker: str
+    text: str
+    start_seconds: float = 0.0
+    end_seconds: float = 0.0
+
+
+class SuggestionRow(BaseModel):
+    at_chunk: int
+    kind: str = "bring_up"
+    title: str
+    detail: str = ""
+    priority: Literal["high", "medium", "low"] = "medium"
+
+
+class UpdatesCursor(BaseModel):
+    """Client's last-seen position, passed to the ``get_updates`` Query so the
+    Workflow only returns new transcript rows / suggestions. Sent as a single
+    argument (parameter-pack-friendly for the Swift client)."""
+
+    since_chunk: int = 0
+    since_suggestion: int = 0
+
+
+class MeetingUpdates(BaseModel):
+    """Snapshot returned by the ``get_updates`` Query. ``transcript`` and
+    ``suggestions`` contain only rows at/after the client's last-seen index;
+    ``labels`` is the full current index->label map so the client can also
+    retroactively upgrade earlier transcript rows as names are identified."""
+
+    state: str
+    stop_requested: bool = False
+    abort_requested: bool = False
+    chunk_count: int = 0
+    suggestion_count: int = 0
+    transcript: list[TranscriptRow] = Field(default_factory=list)
+    suggestions: list[SuggestionRow] = Field(default_factory=list)
+    labels: dict[int, str] = Field(default_factory=dict)
+    roster: list[str] = Field(default_factory=list)
+    summary: Optional[MeetingSummary] = None
+
+
+# ---------------------------------------------------------------------------
 # Workflow Stream event payloads (one type per topic)
 # ---------------------------------------------------------------------------
 TOPIC_TRANSCRIPT = "transcript"
