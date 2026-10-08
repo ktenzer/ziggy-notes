@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from temporalio import activity
 
+from ziggy import config
 from ziggy.llm import structured_completion
 from ziggy.models import MeetingSummary, SummaryInput
-from ziggy.prompts import SUMMARY_SYSTEM_PROMPT, build_summary_user_prompt
+from ziggy.prompts import build_summary_user_prompt, summary_system_prompt
 
 
 @activity.defn(name="summarize_meeting")
@@ -24,13 +25,15 @@ async def summarize_meeting(input: SummaryInput) -> MeetingSummary:
         guidelines=input.guidelines,
         structure=input.structure,
     )
+    system_prompt = summary_system_prompt(config.load_role_guidance(config.USER_ROLE))
     summary = await structured_completion(
-        SUMMARY_SYSTEM_PROMPT, user_prompt, MeetingSummary
+        system_prompt, user_prompt, MeetingSummary
     )
     activity.logger.info(
-        "summary produced: %d key point(s), %d action item(s), %d next step(s)",
+        "summary produced: %d key point(s), %d action item(s), %d next step(s), score=%d",
         len(summary.key_points),
         len(summary.action_items),
         len(summary.next_steps),
+        summary.score,
     )
     return summary

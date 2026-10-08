@@ -49,8 +49,12 @@ stop.py ─ signal ─▶   │  (hosts stream,              (transcript, sugges
 - **`identify_speakers`** runs every `ANALYZE_EVERY_N_CHUNKS` chunks (and once
   more before the summary) to attribute each line to a speaker. See
   [Speaker identification](#speaker-identification).
-- **`analyze_conversation`** runs every `ANALYZE_EVERY_N_CHUNKS` chunks and emits
-  active-listening suggestions, published to the `suggestions` topic.
+- **`analyze_conversation`** runs every `ANALYZE_EVERY_N_CHUNKS` chunks (once the
+  conversation has warmed up for `ANALYSIS_WARMUP_MINUTES` of elapsed call time)
+  and maintains a live, ranked board of at most `MAX_ACTIVE_SUGGESTIONS`: each
+  pass returns the full desired set so applied/irrelevant advice is dropped, new
+  advice is added, and items are re-prioritized. Published to the `suggestions`
+  topic and returned in full by the `get_updates` query.
 - On a `stop_recording` signal or `SILENCE_TIMEOUT_SECONDS` of silence, the
   workflow runs **`summarize_meeting`** and **`create_google_doc`**, publishes the
   summary, and returns the full transcript + summary + doc link.
@@ -183,6 +187,8 @@ All settings live in `.env` (see `.env.example` for the full list). Highlights:
 | `TEMPORAL_ADDRESS` / `TEMPORAL_NAMESPACE` / `TEMPORAL_API_KEY` | localhost | Switch localhost ↔ Cloud |
 | `CHUNK_SECONDS` | `20` | Audio window per transcription/signal |
 | `ANALYZE_EVERY_N_CHUNKS` | `3` | Active-listening cadence |
+| `ANALYSIS_WARMUP_MINUTES` | `5` | Elapsed call time before any live guidance is surfaced |
+| `MAX_ACTIVE_SUGGESTIONS` | `5` | Max live suggestions shown at once (ranked; lowest/oldest evicted) |
 | `SILENCE_TIMEOUT_SECONDS` | `300` | Auto-stop after this much silence (0 = never) |
 | `WHISPER_MODEL` | `base` | faster-whisper model size |
 | `LLM_PROVIDER` / `LLM_MODEL` | `openai` | `openai` or `anthropic` |

@@ -47,23 +47,32 @@ struct ZiggyNotesApp: App {
                 }
         }
         .windowToolbarStyle(.unified)
-
-        SwiftUI.Settings {
-            SettingsView()
-                .environment(app)
+        .commands {
+            // Keep the standard ⌘, shortcut, but open our in-app Settings page
+            // instead of a separate popup window.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { app.pendingRoute = .settings }
+                    .keyboardShortcut(",", modifiers: .command)
+                Button("Worker Logs") { app.pendingRoute = .workerLogs }
+            }
         }
     }
 }
 
 /// Gates the main UI behind the bootstrap sequence (mic → worker → Temporal client).
+/// Once bootstrap finishes — successfully *or* with a failure — we show the main
+/// window so the in-app Settings and Worker Logs pages are always reachable (the
+/// failure surfaces as an inline banner there). The full-screen overlay is only
+/// used for the brief transient startup phases.
 struct RootView: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
         Group {
-            if app.isReady {
+            switch app.phase {
+            case .ready, .failed:
                 ContentView()
-            } else {
+            default:
                 BootstrapOverlay(onRetry: { Task { await app.bootstrap() } })
             }
         }

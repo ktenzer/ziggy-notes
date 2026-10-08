@@ -19,21 +19,47 @@ struct ZiggyBackground: View {
     }
 }
 
-/// The Temporal wordmark/logo shown in the top-left of the UI.
+/// The Temporal symbol shown in the top-left of the sidebar (logo only).
 struct TemporalLogoMark: View {
     var tint: Color = Theme.textPrimary   // brand symbol shown in black on off-white
     var body: some View {
-        HStack(spacing: 8) {
-            Image("TemporalLogo")
-                .renderingMode(.template)
-                .resizable()
-                .scaledToFit()
-                .frame(height: 28)
-                .foregroundStyle(tint)
-            Text("Ziggy Notes")
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .foregroundStyle(Theme.textPrimary)
+        Image("TemporalLogo")
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .frame(height: 28)
+            .foregroundStyle(tint)
+    }
+}
+
+/// A meeting title that is also a link to the meeting's workflow in the Temporal
+/// Web UI (local dev server UI or Temporal Cloud). Clicking opens the browser.
+struct WorkflowTitleLink: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.openURL) private var openURL
+
+    let title: String
+    let meetingId: String
+    var size: CGFloat = 17
+
+    var body: some View {
+        Button {
+            if let url = app.config.workflowWebURL(meetingId: meetingId) {
+                openURL(url)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: size, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                Image(systemName: "arrow.up.right.square")
+                    .font(.system(size: size * 0.62))
+                    .foregroundStyle(Theme.purple)
+            }
         }
+        .buttonStyle(.plain)
+        .help("Open this workflow in Temporal")
     }
 }
 
@@ -108,17 +134,11 @@ struct BootstrapOverlay: View {
                                 .frame(maxWidth: 520, alignment: .leading)
                         }
                         .frame(maxHeight: 180)
-                        HStack {
-                            SettingsLink {
-                                Label("Settings", systemImage: "gearshape")
-                            }
-                            .buttonStyle(.bordered)
-                            Button(action: onRetry) {
-                                Text("Retry").fontWeight(.semibold)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(Theme.purple)
+                        Button(action: onRetry) {
+                            Text("Retry").fontWeight(.semibold)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.purple)
                     }
                     .ziggyCard()
                     .frame(maxWidth: 560)

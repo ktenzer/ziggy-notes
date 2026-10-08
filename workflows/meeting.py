@@ -66,6 +66,7 @@ with workflow.unsafe.imports_passed_through():
         MeetingResult,
         MeetingSummary,
         MeetingUpdates,
+        Observation,
         SpeakerMapEvent,
         SuggestionEvent,
         SuggestionRow,
@@ -78,10 +79,9 @@ with workflow.unsafe.imports_passed_through():
         default_label,
     )
 
-# Active-listening analysis sends the full cumulative transcript each pass (see
-# _run_analysis). prior_observation_titles prevents the model from repeating
-# suggestions it has already surfaced; this caps how many we remember.
-MAX_PRIOR_TITLES = 50
+# Priority ordering used when trimming the active suggestion board to the cap:
+# highs are kept over mediums over lows (then older items are evicted first).
+_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 # LLM activities (analysis + summary) retry UNLIMITED (maximum_attempts=0) with
 # capped exponential backoff, so a transient LLM error -- or a missing/invalid
@@ -128,10 +128,13 @@ class MeetingWorkflow:
         # cancel any in-flight finalize activity (summary/doc) and exit now.
         self._abort_requested = False
         self._last_analyzed_count = 0
-        self._prior_titles: list[str] = []
-        # Surfaced suggestions retained for the get_updates Query (the UI polls
-        # these; they are also published on the suggestions stream topic).
-        self._suggestions: list[SuggestionEvent] = []
+        # The live, ranked, capped suggestion board (each item has a stable id).
+        # The get_updates Query returns this full set so the UI can reconcile
+        # (update/remove) its cards; newly-added items are also published on the
+        # suggestions stream topic.
+        self._active_suggestions: list[Observation] = []
+        # Deterministic, monotonic id source for new suggestions (replay-safe).
+        self._next_suggestion_seq = 0
         # Resolved speaker label per chunk index. Starts as the source-based
         # default ("Temporal"/"Customer") and is upgraded to real names by the
         # identify_speakers Activity. _roster is the unique set for the UI.
@@ -201,12 +204,11 @@ class MeetingWorkflow:
 
     @workflow.query(name="get_updates")
     def get_updates(self, cursor: Optional[UpdatesCursor] = None) -> MeetingUpdates:
-        """Incremental snapshot for the polling UI. Returns transcript rows with
-        index >= since_chunk and suggestions beyond since_suggestion, plus the
-        full current label map/roster, state flags, and the summary once ready."""
+        """Snapshot for the polling UI. Returns transcript rows with index >=
+        since_chunk, the FULL current suggestion board (ranked, capped), the full
+        current label map/roster, state flags, and the summary once ready."""
         cur = cursor or UpdatesCursor()
         since_chunk = cur.since_chunk
-        since_suggestion = cur.since_suggestion
         rows = [
             TranscriptRow(
                 index=c.index,
@@ -218,23 +220,24 @@ class MeetingWorkflow:
             for c in self._chunks
             if c.index >= since_chunk
         ]
-        new_suggestions = self._suggestions[since_suggestion:]
+        # The full current board (not cursor-incremental): the client reconciles
+        # its displayed cards against this set each poll.
         sugg_rows = [
             SuggestionRow(
-                at_chunk=s.at_chunk,
-                kind=s.observation.kind,
-                title=s.observation.title,
-                detail=s.observation.detail,
-                priority=s.observation.priority,
+                id=o.id,
+                kind=o.kind,
+                title=o.title,
+                detail=o.detail,
+                priority=o.priority,
             )
-            for s in new_suggestions
+            for o in self._active_suggestions
         ]
         return MeetingUpdates(
             state=self._state,
             stop_requested=self._stop_requested,
             abort_requested=self._abort_requested,
             chunk_count=len(self._chunks),
-            suggestion_count=len(self._suggestions),
+            suggestion_count=len(self._active_suggestions),
             transcript=rows,
             suggestions=sugg_rows,
             labels=dict(self._labels),
@@ -247,6 +250,11 @@ class MeetingWorkflow:
         """Resolved display label for a chunk: identified name if we have one,
         else the chunk's own label, else the source-based default."""
         return self._labels.get(chunk.index) or chunk.speaker or default_label(chunk.source)
+
+    def _elapsed_seconds(self) -> float:
+        """Elapsed call time, from transcript-chunk timestamps. Used to gate the
+        analysis warmup; robust to silence filtering and the two audio sources."""
+        return max((c.end_seconds for c in self._chunks), default=0.0)
 
     def _render_transcript(self, max_chunks: Optional[int] = None) -> str:
         chunks = self._chunks if max_chunks is None else self._chunks[-max_chunks:]
@@ -351,7 +359,8 @@ class MeetingWorkflow:
                 title=input.title,
                 transcript=transcript,
                 call_context=input.call_context,
-                prior_observation_titles=self._prior_titles[-MAX_PRIOR_TITLES:],
+                current_suggestions=list(self._active_suggestions),
+                max_suggestions=config.MAX_ACTIVE_SUGGESTIONS,
             ),
             start_to_close_timeout=timedelta(seconds=90),
             retry_policy=LLM_RETRY,
@@ -372,12 +381,54 @@ class MeetingWorkflow:
             workflow.logger.warning("analysis activity failed, skipping: %s", exc)
             self._state = "recording"
             return
-        for obs in result.observations:
-            self._prior_titles.append(obs.title)
-            event = SuggestionEvent(at_chunk=len(self._chunks), observation=obs)
-            self._suggestions.append(event)
-            self._suggestions_topic.publish(event)
+        self._apply_suggestions(result.observations)
         self._state = "recording"
+
+    def _new_sid(self) -> str:
+        """Deterministic, monotonic suggestion id (replay-safe)."""
+        sid = f"s{self._next_suggestion_seq}"
+        self._next_suggestion_seq += 1
+        return sid
+
+    def _apply_suggestions(self, desired: list[Observation]) -> None:
+        """Replace the board with the model's desired set: keep items whose id
+        matches an existing one (reusing the id), assign ids to new ones, then
+        rank by priority (then order) and trim to MAX_ACTIVE_SUGGESTIONS.
+
+        Publishes a SuggestionEvent on the stream only for newly-added ids;
+        removals are reflected via the get_updates Query."""
+        existing_ids = {o.id for o in self._active_suggestions if o.id}
+        merged: list[Observation] = []
+        new_ids: list[str] = []
+        for obs in desired:
+            if obs.id and obs.id in existing_ids:
+                oid = obs.id
+            else:
+                oid = self._new_sid()
+                new_ids.append(oid)
+            merged.append(
+                Observation(
+                    id=oid,
+                    kind=obs.kind,
+                    title=obs.title,
+                    detail=obs.detail,
+                    priority=obs.priority,
+                )
+            )
+        # Rank high->medium->low, keeping the model's order within a priority as a
+        # recency tiebreak, then enforce the cap (evict lower priority / older).
+        ranked = sorted(
+            enumerate(merged),
+            key=lambda t: (_PRIORITY_RANK.get(t[1].priority, 1), t[0]),
+        )
+        trimmed = [o for _, o in ranked[: config.MAX_ACTIVE_SUGGESTIONS]]
+        kept_ids = {o.id for o in trimmed}
+        self._active_suggestions = trimmed
+        for o in trimmed:
+            if o.id in new_ids and o.id in kept_ids:
+                self._suggestions_topic.publish(
+                    SuggestionEvent(at_chunk=len(self._chunks), observation=o)
+                )
 
     async def _finish_or_abort(self, act, fallback):
         """Await a finalize activity, but cancel it immediately if an abort is
@@ -427,6 +478,15 @@ class MeetingWorkflow:
         # Orchestration loop: wake on stop, capture completion, or enough new
         # chunks to analyze.
         while True:
+            if not input.ai_assistance:
+                # AI assistance off: transcript-only mode. We still receive and
+                # publish transcript chunks (via the add_transcript_chunk Signal
+                # handler), but run NO live analysis/identify. Just wait until the
+                # user stops or capture ends, then finalize + summarize.
+                await workflow.wait_condition(
+                    lambda: self._stop_requested or capture.done()
+                )
+                break
             await workflow.wait_condition(
                 lambda: self._stop_requested
                 or capture.done()
@@ -434,6 +494,12 @@ class MeetingWorkflow:
             )
             if self._stop_requested or capture.done():
                 break
+            # Warmup: surface no live guidance until enough elapsed call time has
+            # passed. Reset the cadence counter so we re-check after N more chunks
+            # instead of busy-looping.
+            if self._elapsed_seconds() < config.ANALYSIS_WARMUP_MINUTES * 60:
+                self._last_analyzed_count = len(self._chunks)
+                continue
             # Attribute speakers first (so live suggestions use names), then
             # analyze. Both are stop-cancellable and best-effort.
             await self._run_identify(
@@ -456,8 +522,14 @@ class MeetingWorkflow:
 
         # Analyze any trailing chunks that didn't hit the cadence -- but skip
         # this when the user asked to stop: they want to finalize and exit, not
-        # kick off another LLM round.
-        if not self._stop_requested and len(self._chunks) > self._last_analyzed_count:
+        # kick off another LLM round. Also skipped entirely when AI assistance
+        # is off (transcript-only mode).
+        if (
+            input.ai_assistance
+            and not self._stop_requested
+            and len(self._chunks) > self._last_analyzed_count
+            and self._elapsed_seconds() >= config.ANALYSIS_WARMUP_MINUTES * 60
+        ):
             await self._run_analysis(input)
 
         # Final speaker attribution so the summary and saved transcript use real

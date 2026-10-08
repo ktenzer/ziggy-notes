@@ -28,8 +28,13 @@ BullMQ/Sidekiq, etc.) and how to position Temporal against them honestly.
 Your job: help the rep WIN this deal by surfacing timely, specific, accurate \
 things to say NEXT. Think like the best sales engineer in the room.
 
-For the most recent part of the conversation, produce a SHORT list of \
-observations. Each observation must be one of these kinds:
+You maintain a LIVE board of the most valuable things the rep should do right \
+now. You are given the suggestions currently on the board (each with an "id") and \
+the conversation so far. Return the FULL updated board: the complete, prioritized \
+list of at most N suggestions (N is given). This REPLACES the board, so include \
+every suggestion that should remain visible.
+
+Each suggestion must be one of these kinds:
   - "bring_up": a point/value/story the rep should proactively raise now
   - "explain_feature": a Temporal capability worth explaining given what was said
   - "address_objection": how to handle a concern/objection the customer raised
@@ -37,14 +42,29 @@ observations. Each observation must be one of these kinds:
   - "risk": a deal risk / something the rep is handling poorly, with a fix
   - "next_step": a concrete next step to propose
 
+How to maintain the board:
+  - KEEP a current suggestion that is still relevant by returning it again with \
+its SAME "id" (you may update its title/detail/priority).
+  - DROP a current suggestion -- by simply omitting it -- once it has been \
+addressed/acted on by the rep, or is no longer relevant given the latest \
+conversation. Dropping is how applied advice disappears.
+  - ADD a new suggestion by including it with an EMPTY "id" ("").
+  - Avoid churn: only drop something if it is clearly addressed or irrelevant; \
+don't drop and immediately re-add the same point.
+
+Ranking:
+  - Set each suggestion's "priority" to high, medium, or low by how urgent/\
+valuable it is to say NEXT.
+  - Order the list high-priority first. If more than N items are worthy, keep the \
+highest-priority ones (highs over mediums over lows).
+
 Rules:
   - Be specific and grounded in what was ACTUALLY said. No generic filler.
-  - Prefer 1-3 high-signal observations over many low-value ones. It's fine to \
-return an empty list if nothing new is worth surfacing.
+  - Return at most N suggestions. It's fine to return fewer, or an empty list if \
+nothing is worth surfacing yet.
   - Keep each "title" under ~12 words and "detail" to 1-3 sentences the rep \
 could glance at mid-call.
   - Be technically accurate about Temporal. Never invent features.
-  - Do NOT repeat observations already surfaced (they are provided to you).
 """
 
 SUMMARY_SYSTEM_PROMPT = """\
@@ -58,6 +78,18 @@ restating the whole call. Capture decisions, concerns, and commitments. Where \
 Temporal technical topics came up, summarize them correctly. Transcript lines \
 are labeled by speaker (real names where known, otherwise "Temporal"/"Customer" \
 for the two sides); attribute decisions/commitments to the right party.
+
+In addition to the summary, act as a performance coach for the user (the \
+Temporal side). Provide:
+  - "feedback": 2-4 sentences of honest, constructive feedback on how the user \
+performed on THIS call and, specifically, what they could have done better. Be \
+direct and actionable, not generic praise.
+  - "score": an integer from 1 (poor) to 10 (excellent) rating how well the user \
+accomplished their objectives. Judge against the user's role objectives and \
+scoring criteria in the "Your role on this call" section below when provided; \
+otherwise judge general sales effectiveness. Be fair but discerning -- reserve \
+9-10 for truly excellent calls. Use 0 only if there is not enough conversation \
+to judge.
 """
 
 IDENTITY_SYSTEM_PROMPT = """\
@@ -93,28 +125,58 @@ use "Name (Temporal)"; otherwise "Temporal".
 """
 
 
+def _with_role(base: str, role_guidance: Optional[str]) -> str:
+    """Append the selected role's English guidance to a base system prompt.
+
+    ``role_guidance`` is the text of one of the ``ziggy/roles/*.md`` skill files
+    (see ``config.load_role_guidance``). When ``None`` (no/invalid role), the base
+    prompt is returned unchanged so behavior is unaffected.
+    """
+    if not role_guidance:
+        return base
+    return base + "\n\n## Your role on this call\n" + role_guidance.strip()
+
+
+def analysis_system_prompt(role_guidance: Optional[str]) -> str:
+    """Live active-listening system prompt, specialized for the user's role."""
+    return _with_role(TEMPORAL_SALES_SYSTEM_PROMPT, role_guidance)
+
+
+def summary_system_prompt(role_guidance: Optional[str]) -> str:
+    """Final-summary system prompt, specialized for the user's role."""
+    return _with_role(SUMMARY_SYSTEM_PROMPT, role_guidance)
+
+
 def build_analysis_user_prompt(
     *,
     title: str,
     transcript: str,
     call_context: Optional[str],
-    prior_observation_titles: list[str],
+    current_suggestions: list["Observation"],
+    max_suggestions: int,
 ) -> str:
     parts: list[str] = [f"Call title: {title}"]
     if call_context:
         parts.append("Call context (about this specific account/opportunity):")
         parts.append(call_context.strip())
-    if prior_observation_titles:
+    parts.append(f"Maximum suggestions on the board (N): {max_suggestions}")
+    if current_suggestions:
+        lines = [
+            f'- id={o.id or "?"} [{o.priority}] ({o.kind}) {o.title}'
+            for o in current_suggestions
+        ]
         parts.append(
-            "Observations already surfaced (do NOT repeat these):\n"
-            + "\n".join(f"- {t}" for t in prior_observation_titles)
+            "Suggestions currently on the board (keep by reusing the id, or drop "
+            "by omitting):\n" + "\n".join(lines)
         )
+    else:
+        parts.append("The board is currently empty.")
     parts.append(
         "Conversation transcript so far (speaker-labeled):\n" + transcript.strip()
     )
     parts.append(
-        "Return observations for what the Temporal side should do/say NEXT, as "
-        "structured data."
+        "Return the FULL updated board (at most N suggestions, highest priority "
+        "first) for what the Temporal side should do/say NEXT, as structured data."
     )
     return "\n\n".join(parts)
 
@@ -162,6 +224,8 @@ def build_summary_user_prompt(
         parts.append("Desired summary structure (follow this):\n" + structure.strip())
     parts.append("Full call transcript (speaker-labeled):\n" + transcript.strip())
     parts.append(
-        "Produce: a concise summary, key points, action items, and clear next steps."
+        "Produce: a concise summary, key points, action items, and clear next "
+        "steps, plus honest coaching feedback and a 1-10 performance score for "
+        "the user, judged against their role."
     )
     return "\n\n".join(parts)

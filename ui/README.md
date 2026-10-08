@@ -56,7 +56,7 @@ Mirrors the Python `ziggy/config.py` logic exactly:
 | -------------------- | ------------------ | ---------------------------------------------------- |
 | `TEMPORAL_ADDRESS`   | `localhost:7233`   | `host:port` of the Temporal frontend                 |
 | `TEMPORAL_NAMESPACE` | `default`          | Namespace                                            |
-| `TEMPORAL_TASK_QUEUE`| `ziggy-notes-tq`   | Task queue (must match the worker)                   |
+| `TEMPORAL_TASK_QUEUE`| per-machine        | Auto-derived from the hardware UUID (`ziggy-notes-tq-<tag>`) so users sharing a namespace stay isolated; set only to override |
 | `TEMPORAL_API_KEY`   | —                  | If set → **Temporal Cloud** (Bearer auth + TLS)      |
 | `TEMPORAL_TLS`       | —                  | `1`/`true`/`yes`/`on` → force TLS for self-hosted    |
 
@@ -64,6 +64,45 @@ With no env vars set, the app connects to a local dev server with plaintext.
 
 Set these in the **scheme's Run → Environment Variables** when launching from Xcode,
 or export them before launching the built app from a terminal.
+
+## In-app Settings
+
+Open **Settings** (⌘,) to configure the app. These values are written through to
+the project's `.env` and injected into the worker process, then the worker is
+restarted so changes take effect.
+
+Required before you can start a note:
+
+| Setting           | `.env` key                         | Meaning                                                        |
+| ----------------- | ---------------------------------- | -------------------------------------------------------------- |
+| **Your Role**     | `USER_ROLE`                        | `ae`, `sa`, or `bdr` — tailors live guidance and the summary   |
+| **AI Provider**   | `LLM_PROVIDER` + `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Provider and its API key                   |
+
+`USER_ROLE` selects an English "skill" file under
+[`ziggy/roles/`](../ziggy/roles) (`ae.md` / `sa.md` / `bdr.md`) that the worker
+injects into the active-listening and summary prompts:
+
+- **Account Executive (`ae`)** — value/business-focused discovery (use case,
+  stakeholders, blockers, timeline, scale, business value for Temporal Cloud).
+- **Solution Architect (`sa`)** — technical; drives a technical win and
+  unblocks the use case into production by positioning Temporal's features.
+- **Business Development Representative (`bdr`)** — non-technical initial call;
+  piques interest and books a follow-up with the AE + SA.
+
+There is no default role. If a role (or provider key) is not set, clicking
+**New Note** opens Settings instead of starting a note.
+
+Optional:
+
+| Setting             | `.env` key            | Meaning                                                                 |
+| ------------------- | --------------------- | ---------------------------------------------------------------------- |
+| **AI Assistance**   | `ZIGGY_AI_ASSISTANCE` | On (default) surfaces live active-listening guidance during the call. Off: the call is only transcribed and summarized — no live suggestions. |
+
+The toggle is captured per-meeting at start time, so changing it only affects
+notes started afterward. Regardless of the toggle, every finished note includes a
+**Coaching Feedback** card: brief, role-aware feedback on what you could have done
+better plus a **1–10 performance score** judged against your role's objectives
+(see the `## Feedback and scoring` section in each `ziggy/roles/*.md`).
 
 ## Worker auto-start
 

@@ -14,22 +14,47 @@ final class Settings {
         var label: String { self == .openai ? "OpenAI" : "Anthropic" }
     }
 
+    /// The user's sales role, which tailors live guidance and the summary
+    /// (written through to the worker as `USER_ROLE`). Required — there is no
+    /// default; the app prompts for it before a note can be started.
+    enum Role: String, CaseIterable, Identifiable {
+        case ae, sa, bdr
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .ae:  return "Account Executive"
+            case .sa:  return "Solution Architect"
+            case .bdr: return "Business Development Representative"
+            }
+        }
+    }
+
+    // Role (required)
+    var role: Role? = nil
+
     // LLM
     var provider: Provider = .openai
     var openAIKey: String = ""
     var anthropicKey: String = ""
     var llmModel: String = ""
 
+    // AI assistance: when on (default), surface live active-listening guidance
+    // during the call. When off, only transcribe + summarize (no live suggestions).
+    var aiAssistance: Bool = true
+
     // Temporal
     var useTemporalCloud: Bool = false
     var temporalAddress: String = "localhost:7233"
     var temporalNamespace: String = "default"
-    var temporalTaskQueue: String = "ziggy-notes-tq"
     var temporalApiKey: String = ""
 
     // App configuration
     var chunkSeconds: Double = 20
     var analyzeEveryNChunks: Int = 3
+    // Minutes of elapsed call time before any live guidance is surfaced.
+    var warmupMinutes: Double = 5
+    // Max number of live suggestions shown at once.
+    var maxActiveSuggestions: Int = 5
 
     // Output
     var outputDir: String = ""
@@ -45,6 +70,7 @@ final class Settings {
     }
 
     var isValid: Bool {
+        guard role != nil else { return false }
         guard !apiKeyForProvider.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         if useTemporalCloud {
             if temporalAddress.trimmingCharacters(in: .whitespaces).isEmpty { return false }
@@ -57,32 +83,38 @@ final class Settings {
     // MARK: - Persistence (UserDefaults)
 
     func load() {
+        role = (d.string(forKey: "userRole")).flatMap(Role.init(rawValue:))
         provider = Provider(rawValue: d.string(forKey: "llmProvider") ?? "openai") ?? .openai
         openAIKey = d.string(forKey: "openAIKey") ?? ""
         anthropicKey = d.string(forKey: "anthropicKey") ?? ""
         llmModel = d.string(forKey: "llmModel") ?? ""
+        aiAssistance = d.object(forKey: "aiAssistance") as? Bool ?? true
         useTemporalCloud = d.bool(forKey: "useTemporalCloud")
         temporalAddress = d.string(forKey: "temporalAddress") ?? "localhost:7233"
         temporalNamespace = d.string(forKey: "temporalNamespace") ?? "default"
-        temporalTaskQueue = d.string(forKey: "temporalTaskQueue") ?? "ziggy-notes-tq"
         temporalApiKey = d.string(forKey: "temporalApiKey") ?? ""
         chunkSeconds = d.object(forKey: "chunkSeconds") as? Double ?? 20
         analyzeEveryNChunks = d.object(forKey: "analyzeEveryNChunks") as? Int ?? 3
+        warmupMinutes = d.object(forKey: "warmupMinutes") as? Double ?? 5
+        maxActiveSuggestions = d.object(forKey: "maxActiveSuggestions") as? Int ?? 5
         outputDir = d.string(forKey: "outputDir") ?? ""
     }
 
     func save() {
+        d.set(role?.rawValue, forKey: "userRole")
         d.set(provider.rawValue, forKey: "llmProvider")
         d.set(openAIKey, forKey: "openAIKey")
         d.set(anthropicKey, forKey: "anthropicKey")
         d.set(llmModel, forKey: "llmModel")
+        d.set(aiAssistance, forKey: "aiAssistance")
         d.set(useTemporalCloud, forKey: "useTemporalCloud")
         d.set(temporalAddress, forKey: "temporalAddress")
         d.set(temporalNamespace, forKey: "temporalNamespace")
-        d.set(temporalTaskQueue, forKey: "temporalTaskQueue")
         d.set(temporalApiKey, forKey: "temporalApiKey")
         d.set(chunkSeconds, forKey: "chunkSeconds")
         d.set(analyzeEveryNChunks, forKey: "analyzeEveryNChunks")
+        d.set(warmupMinutes, forKey: "warmupMinutes")
+        d.set(maxActiveSuggestions, forKey: "maxActiveSuggestions")
         d.set(outputDir, forKey: "outputDir")
     }
 
@@ -93,16 +125,21 @@ final class Settings {
     func hydrateFromEnvIfNeeded(projectDir: String) {
         guard !d.bool(forKey: "ziggySettingsInitialized") else { return }
         let env = Self.parseEnvFile(projectDir: projectDir)
+        if let v = env["USER_ROLE"], let r = Role(rawValue: v.lowercased()) { role = r }
         if let v = env["LLM_PROVIDER"], let p = Provider(rawValue: v.lowercased()) { provider = p }
+        if let v = env["ZIGGY_AI_ASSISTANCE"] {
+            aiAssistance = ["1", "true", "yes", "on"].contains(v.lowercased())
+        }
         if let v = env["OPENAI_API_KEY"] { openAIKey = v }
         if let v = env["ANTHROPIC_API_KEY"] { anthropicKey = v }
         if let v = env["LLM_MODEL"] { llmModel = v }
         if let v = env["CHUNK_SECONDS"], let n = Double(v) { chunkSeconds = n }
         if let v = env["ANALYZE_EVERY_N_CHUNKS"], let n = Int(v) { analyzeEveryNChunks = n }
+        if let v = env["ANALYSIS_WARMUP_MINUTES"], let n = Double(v) { warmupMinutes = n }
+        if let v = env["MAX_ACTIVE_SUGGESTIONS"], let n = Int(v) { maxActiveSuggestions = n }
         if let v = env["ZIGGY_OUTPUT_DIR"] { outputDir = v }
         if let addr = env["TEMPORAL_ADDRESS"], !addr.isEmpty { temporalAddress = addr }
         if let ns = env["TEMPORAL_NAMESPACE"], !ns.isEmpty { temporalNamespace = ns }
-        if let tq = env["TEMPORAL_TASK_QUEUE"], !tq.isEmpty { temporalTaskQueue = tq }
         if let key = env["TEMPORAL_API_KEY"], !key.isEmpty {
             temporalApiKey = key
             useTemporalCloud = true
@@ -116,25 +153,30 @@ final class Settings {
     /// Key/value pairs injected into the worker process and written to `.env`.
     func workerEnvironment() -> [String: String] {
         var e: [String: String] = [:]
+        if let role { e["USER_ROLE"] = role.rawValue }
         e["LLM_PROVIDER"] = provider.rawValue
+        e["ZIGGY_AI_ASSISTANCE"] = aiAssistance ? "true" : "false"
         if !openAIKey.isEmpty { e["OPENAI_API_KEY"] = openAIKey }
         if !anthropicKey.isEmpty { e["ANTHROPIC_API_KEY"] = anthropicKey }
         e["LLM_MODEL"] = llmModel
         e["CHUNK_SECONDS"] = Self.formatNumber(chunkSeconds)
         e["ANALYZE_EVERY_N_CHUNKS"] = String(analyzeEveryNChunks)
+        e["ANALYSIS_WARMUP_MINUTES"] = Self.formatNumber(warmupMinutes)
+        e["MAX_ACTIVE_SUGGESTIONS"] = String(maxActiveSuggestions)
         if !outputDir.isEmpty { e["ZIGGY_OUTPUT_DIR"] = outputDir }
 
+        // Unique per-machine task queue so the spawned worker matches the Swift
+        // client and users sharing a namespace never pick up each other's work.
+        e["TEMPORAL_TASK_QUEUE"] = TemporalConfig.deviceTaskQueue
         if useTemporalCloud {
             e["TEMPORAL_ADDRESS"] = temporalAddress
             e["TEMPORAL_NAMESPACE"] = temporalNamespace
-            e["TEMPORAL_TASK_QUEUE"] = temporalTaskQueue.isEmpty ? "ziggy-notes-tq" : temporalTaskQueue
             e["TEMPORAL_API_KEY"] = temporalApiKey
             e["TEMPORAL_TLS"] = ""   // TLS implied by API key
         } else {
             // Local dev: explicitly clear cloud vars so stale values don't force Cloud.
             e["TEMPORAL_ADDRESS"] = "localhost:7233"
             e["TEMPORAL_NAMESPACE"] = "default"
-            e["TEMPORAL_TASK_QUEUE"] = temporalTaskQueue.isEmpty ? "ziggy-notes-tq" : temporalTaskQueue
             e["TEMPORAL_API_KEY"] = ""
             e["TEMPORAL_TLS"] = ""
         }
@@ -154,6 +196,9 @@ final class Settings {
         }
 
         var managed = workerEnvironment()
+        // The task queue is derived per-machine and injected into the worker
+        // process directly; it is intentionally NOT persisted to .env.
+        managed.removeValue(forKey: "TEMPORAL_TASK_QUEUE")
 
         // Update existing KEY= lines.
         for i in lines.indices {

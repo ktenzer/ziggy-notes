@@ -7,8 +7,11 @@ struct MeetingDetailView: View {
     @Bindable var meeting: MeetingRecord
     @State private var transcriptExpanded = false
 
+    // Final board: highest priority first, then oldest first.
     private var sortedSuggestions: [SuggestionRecord] {
-        meeting.suggestions.sorted { $0.atChunk < $1.atChunk }
+        meeting.suggestions.sorted {
+            ($0.priorityRank, $0.createdAt) < ($1.priorityRank, $1.createdAt)
+        }
     }
 
     private var sortedLines: [TranscriptLineRecord] {
@@ -22,6 +25,9 @@ struct MeetingDetailView: View {
 
                 if meeting.hasSummary {
                     summaryCard
+                    if !meeting.feedbackText.isEmpty || meeting.score > 0 {
+                        feedbackCard
+                    }
                 } else {
                     Text(meeting.state == .summarizing ? "Summary is being generated…" : "No summary available for this meeting.")
                         .foregroundStyle(Theme.textSecondary)
@@ -38,14 +44,12 @@ struct MeetingDetailView: View {
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .background(ZiggyBackground())
+        .background(Theme.background)
     }
 
     private var titleHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(meeting.title)
-                .font(.system(size: 24, weight: .bold))
-                .foregroundStyle(Theme.textPrimary)
+            WorkflowTitleLink(title: meeting.title, meetingId: meeting.meetingId, size: 24)
             HStack(spacing: 10) {
                 Text(meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
                 statusChip
@@ -89,6 +93,42 @@ struct MeetingDetailView: View {
             bulletBlock("Key Points", items: meeting.keyPoints, icon: "key.fill", color: Theme.purple)
             bulletBlock("Action Items", items: meeting.actionItems, icon: "checkmark.circle.fill", color: Theme.lowPriority)
             bulletBlock("Next Steps", items: meeting.nextSteps, icon: "arrow.right.circle.fill", color: Theme.mediumPriority)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .ziggyCard(padding: 20)
+    }
+
+    private var scoreColor: Color {
+        switch meeting.score {
+        case 8...10: return Theme.lowPriority
+        case 5...7:  return Theme.mediumPriority
+        default:     return Theme.highPriority
+        }
+    }
+
+    private var feedbackCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.fill.checkmark").foregroundStyle(Theme.purple)
+                Text("Coaching Feedback")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                if meeting.score > 0 {
+                    Text("\(meeting.score)/10")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(scoreColor, in: Capsule())
+                }
+            }
+            if !meeting.feedbackText.isEmpty {
+                Text(meeting.feedbackText)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.textPrimary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .ziggyCard(padding: 20)

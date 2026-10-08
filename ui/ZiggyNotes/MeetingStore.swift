@@ -41,6 +41,9 @@ final class MeetingRecord {
     var keyPoints: [String]
     var actionItems: [String]
     var nextSteps: [String]
+    // Role-aware coaching feedback + performance score (1-10; 0 = unscored).
+    var feedbackText: String = ""
+    var score: Int = 0
 
     var roster: [String]
 
@@ -67,6 +70,8 @@ final class MeetingRecord {
         self.keyPoints = []
         self.actionItems = []
         self.nextSteps = []
+        self.feedbackText = ""
+        self.score = 0
         self.roster = []
         self.stopRequested = false
         self.lastChunk = 0
@@ -111,6 +116,9 @@ final class TranscriptLineRecord {
 
 @Model
 final class SuggestionRecord {
+    // Stable id from the backend active-suggestion board (used to reconcile
+    // update/remove across polls). Empty for records created before this field.
+    var suggestionId: String = ""
     var atChunk: Int
     var kind: String
     var title: String
@@ -119,12 +127,22 @@ final class SuggestionRecord {
     var createdAt: Date
     var meeting: MeetingRecord?
 
-    init(atChunk: Int, kind: String, title: String, detail: String, priority: String, createdAt: Date = .now) {
+    init(suggestionId: String = "", atChunk: Int, kind: String, title: String, detail: String, priority: String, createdAt: Date = .now) {
+        self.suggestionId = suggestionId
         self.atChunk = atChunk
         self.kind = kind
         self.title = title
         self.detail = detail
         self.priority = priority
         self.createdAt = createdAt
+    }
+
+    /// Sort key: high (0) before medium (1) before low (2).
+    var priorityRank: Int {
+        switch priority.lowercased() {
+        case "high": return 0
+        case "medium": return 1
+        default: return 2
+        }
     }
 }

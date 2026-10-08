@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from ziggy.config import (  # noqa: E402
+    AI_ASSISTANCE_ENABLED,
     TEMPORAL_TASK_QUEUE,
     connect_temporal_client,
     workflow_id_for,
@@ -50,6 +51,7 @@ async def _start(args: argparse.Namespace) -> str:
         summary_structure=_read_optional(args.structure_file),
         language=args.language,
         rep_name=args.rep_name,
+        ai_assistance=not args.no_ai_assistance,
     )
 
     await client.start_workflow(
@@ -72,6 +74,16 @@ def main() -> None:
     parser.add_argument(
         "--rep-name",
         help="Name of the Temporal rep on the mic (attributes mic lines to them).",
+    )
+    parser.add_argument(
+        "--no-ai-assistance",
+        action="store_true",
+        default=not AI_ASSISTANCE_ENABLED,
+        help=(
+            "Disable live active-listening analysis (no suggestions). The call is "
+            "still transcribed and summarized. Defaults to the ZIGGY_AI_ASSISTANCE "
+            "env setting."
+        ),
     )
     args = parser.parse_args()
 

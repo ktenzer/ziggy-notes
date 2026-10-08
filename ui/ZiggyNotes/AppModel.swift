@@ -2,6 +2,14 @@ import Foundation
 import SwiftData
 import Observation
 
+/// A selectable destination in the sidebar. Meetings are addressed by id; Settings
+/// and Worker Logs are first-class in-app pages (not popup windows).
+enum SidebarRoute: Hashable {
+    case meeting(String)
+    case settings
+    case workerLogs
+}
+
 /// Central orchestrator: boots the Python worker, connects the Temporal client,
 /// starts/stops meetings, reconnects to running meetings on launch, and runs the
 /// 10-second `get_updates` polling loop that merges live data into SwiftData.
@@ -19,6 +27,10 @@ final class AppModel {
 
     private(set) var phase: Phase = .launching
     var banner: String?
+
+    /// Set by menu commands (e.g. ⌘,) to ask the main view to navigate somewhere.
+    /// `ContentView` observes this, applies it to its selection, then clears it.
+    var pendingRoute: SidebarRoute?
 
     let settings = Settings()
     let worker = WorkerManager()
@@ -129,7 +141,8 @@ final class AppModel {
         let input = MeetingInput(
             meetingId: String(meetingId),
             title: title.isEmpty ? "Temporal Sales Call" : title,
-            repName: (repName?.isEmpty == false) ? repName : nil
+            repName: (repName?.isEmpty == false) ? repName : nil,
+            aiAssistance: settings.aiAssistance
         )
 
         let record = MeetingRecord(meetingId: String(meetingId), title: input.title, state: .recording)
@@ -262,20 +275,41 @@ final class AppModel {
         }
         meeting.lastChunk = max(meeting.lastChunk, updates.chunkCount)
 
-        // Append new suggestions.
-        for s in updates.suggestions {
-            let rec = SuggestionRecord(
-                atChunk: s.atChunk,
-                kind: s.kind,
-                title: s.title,
-                detail: s.detail,
-                priority: s.priority
-            )
-            rec.meeting = meeting
-            context.insert(rec)
-            meeting.suggestions.append(rec)
+        // Reconcile the suggestion board against the FULL active set the workflow
+        // returned: drop cards no longer active (applied/irrelevant), update the
+        // ones that remain, and insert new ones. Only reconcile while live so a
+        // finished note keeps its final active set.
+        if !meeting.state.isTerminal {
+            let incomingIds = Set(updates.suggestions.map(\.id))
+            // Remove cards that are no longer on the board (match by stable id;
+            // ignore legacy records with an empty id so we don't wipe old notes).
+            for rec in meeting.suggestions where !rec.suggestionId.isEmpty && !incomingIds.contains(rec.suggestionId) {
+                meeting.suggestions.removeAll { $0 === rec }
+                context.delete(rec)
+            }
+            // Upsert the current board.
+            for s in updates.suggestions {
+                if let existing = meeting.suggestions.first(where: { $0.suggestionId == s.id && !s.id.isEmpty }) {
+                    existing.kind = s.kind
+                    existing.title = s.title
+                    existing.detail = s.detail
+                    existing.priority = s.priority
+                    existing.atChunk = s.atChunk
+                } else {
+                    let rec = SuggestionRecord(
+                        suggestionId: s.id,
+                        atChunk: s.atChunk,
+                        kind: s.kind,
+                        title: s.title,
+                        detail: s.detail,
+                        priority: s.priority
+                    )
+                    rec.meeting = meeting
+                    context.insert(rec)
+                    meeting.suggestions.append(rec)
+                }
+            }
         }
-        meeting.lastSuggestion = max(meeting.lastSuggestion, updates.suggestionCount)
 
         if !updates.roster.isEmpty { meeting.roster = updates.roster }
 
@@ -284,6 +318,8 @@ final class AppModel {
             meeting.keyPoints = summary.keyPoints
             meeting.actionItems = summary.actionItems
             meeting.nextSteps = summary.nextSteps
+            meeting.feedbackText = summary.feedback
+            meeting.score = summary.score
         }
 
         var newState = MeetingState.fromWorkflow(updates.state)

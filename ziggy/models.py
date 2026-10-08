@@ -55,6 +55,11 @@ class MeetingInput(BaseModel):
     summary_structure: Optional[str] = None
     # Optional forced transcription language (e.g. "en"). None = autodetect.
     language: Optional[str] = None
+    # When False, skip live active-listening analysis (no suggestions surfaced
+    # during the call). The call is still transcribed and summarized. Captured at
+    # workflow start so a running meeting is deterministic regardless of later
+    # env/UI changes. Defaults to True (full assistance).
+    ai_assistance: bool = True
 
 
 class TranscriptChunk(BaseModel):
@@ -104,6 +109,10 @@ class CaptureResult(BaseModel):
 class Observation(BaseModel):
     """A single active-listening suggestion for the rep."""
 
+    # Stable id for this suggestion across analysis passes. Empty means "new" --
+    # the workflow assigns an id. The LLM reuses an existing id for any suggestion
+    # it keeps, so the UI can update/remove the right card.
+    id: str = ""
     # bring_up | explain_feature | address_objection | answer_question |
     # risk | next_step
     kind: str = "bring_up"
@@ -118,11 +127,16 @@ class AnalysisInput(BaseModel):
     title: str
     transcript: str
     call_context: Optional[str] = None
-    # Titles of observations already surfaced, so the LLM avoids repeating them.
-    prior_observation_titles: list[str] = Field(default_factory=list)
+    # The suggestions currently displayed (with ids), so the LLM can keep the
+    # still-relevant ones (reusing their id), drop any that were addressed or
+    # became irrelevant, add new ones, and re-rank -- returning the full set.
+    current_suggestions: list[Observation] = Field(default_factory=list)
+    # Hard cap on how many suggestions should be active at once.
+    max_suggestions: int = 5
 
 
 class AnalysisResult(BaseModel):
+    # The FULL desired active set for this pass (kept items reuse their id).
     observations: list[Observation] = Field(default_factory=list)
 
 
@@ -176,6 +190,28 @@ class MeetingSummary(BaseModel):
     key_points: list[str] = Field(default_factory=list)
     action_items: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
+    # Role-aware coaching: honest, constructive feedback on how the user performed
+    # on this call and what they could have done better.
+    feedback: str = Field(
+        default="",
+        description=(
+            "Brief (2-4 sentences) honest, constructive feedback on how well the "
+            "user (the Temporal side) performed their role on this call, and "
+            "specifically what they could have done better. Empty if there is not "
+            "enough conversation to judge."
+        ),
+    )
+    # Performance score 1 (poor) .. 10 (excellent), judged against the user's role
+    # objectives. 0 means not scored (insufficient conversation).
+    score: int = Field(
+        default=0,
+        description=(
+            "Overall performance score from 1 (poor) to 10 (excellent) rating how "
+            "well the user accomplished their role's objectives on this call. "
+            "Reserve 9-10 for truly excellent calls. Use 0 only when there is not "
+            "enough conversation to judge."
+        ),
+    )
 
 
 class GoogleDocInput(BaseModel):
@@ -222,7 +258,10 @@ class TranscriptRow(BaseModel):
 
 
 class SuggestionRow(BaseModel):
-    at_chunk: int
+    # Stable id (matches the Observation id) so the UI can reconcile the active
+    # set across polls (update/remove the right card).
+    id: str = ""
+    at_chunk: int = 0
     kind: str = "bring_up"
     title: str
     detail: str = ""
@@ -239,10 +278,12 @@ class UpdatesCursor(BaseModel):
 
 
 class MeetingUpdates(BaseModel):
-    """Snapshot returned by the ``get_updates`` Query. ``transcript`` and
-    ``suggestions`` contain only rows at/after the client's last-seen index;
-    ``labels`` is the full current index->label map so the client can also
-    retroactively upgrade earlier transcript rows as names are identified."""
+    """Snapshot returned by the ``get_updates`` Query. ``transcript`` contains
+    only rows at/after the client's last-seen index. ``suggestions`` is the FULL
+    current active set (ranked, capped) -- clients reconcile (update/remove) their
+    displayed cards against it rather than appending. ``labels`` is the full
+    current index->label map so the client can retroactively upgrade earlier
+    transcript rows as names are identified."""
 
     state: str
     stop_requested: bool = False

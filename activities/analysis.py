@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from temporalio import activity
 
+from ziggy import config
 from ziggy.llm import structured_completion
 from ziggy.models import AnalysisInput, AnalysisResult
-from ziggy.prompts import TEMPORAL_SALES_SYSTEM_PROMPT, build_analysis_user_prompt
+from ziggy.prompts import analysis_system_prompt, build_analysis_user_prompt
 
 
 @activity.defn(name="analyze_conversation")
@@ -21,10 +22,16 @@ async def analyze_conversation(input: AnalysisInput) -> AnalysisResult:
         title=input.title,
         transcript=input.transcript,
         call_context=input.call_context,
-        prior_observation_titles=input.prior_observation_titles,
+        current_suggestions=input.current_suggestions,
+        max_suggestions=input.max_suggestions,
     )
+    system_prompt = analysis_system_prompt(config.load_role_guidance(config.USER_ROLE))
     result = await structured_completion(
-        TEMPORAL_SALES_SYSTEM_PROMPT, user_prompt, AnalysisResult
+        system_prompt, user_prompt, AnalysisResult
     )
-    activity.logger.info("analysis produced %d observation(s)", len(result.observations))
+    activity.logger.info(
+        "analysis returned %d suggestion(s) for a board of %d",
+        len(result.observations),
+        len(input.current_suggestions),
+    )
     return result

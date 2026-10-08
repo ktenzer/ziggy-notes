@@ -5,6 +5,7 @@ import SwiftUI
 /// "ask anything" prompt.
 struct ActiveMeetingView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.openURL) private var openURL
     @Bindable var meeting: MeetingRecord
 
     @State private var askText: String = ""
@@ -14,8 +15,12 @@ struct ActiveMeetingView: View {
         meeting.lines.sorted { $0.index < $1.index }
     }
 
+    // The live board: highest priority first, then oldest first (stable order so
+    // cards don't jump around as the set is re-ranked/replaced).
     private var sortedSuggestions: [SuggestionRecord] {
-        meeting.suggestions.sorted { $0.atChunk < $1.atChunk }
+        meeting.suggestions.sorted {
+            ($0.priorityRank, $0.createdAt) < ($1.priorityRank, $1.createdAt)
+        }
     }
 
     var body: some View {
@@ -31,7 +36,7 @@ struct ActiveMeetingView: View {
             Divider().overlay(Theme.hairline)
             bottomBar
         }
-        .background(ZiggyBackground())
+        .background(Theme.background)
     }
 
     // MARK: - Header
@@ -39,9 +44,7 @@ struct ActiveMeetingView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(meeting.title)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(Theme.textPrimary)
+                WorkflowTitleLink(title: meeting.title, meetingId: meeting.meetingId, size: 17)
                 Text(meeting.state == .summarizing ? "Summarizing…" : "Listening · \(app.config.summary)")
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondary)
@@ -132,7 +135,7 @@ struct ActiveMeetingView: View {
                             .multilineTextAlignment(.center)
                             .padding(.top, 24)
                     }
-                    ForEach(sortedSuggestions.reversed()) { s in
+                    ForEach(sortedSuggestions) { s in
                         SuggestionCardView(title: s.title, detail: s.detail, priority: s.priority, kind: s.kind)
                     }
                 }

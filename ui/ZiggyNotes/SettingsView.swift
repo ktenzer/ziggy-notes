@@ -13,6 +13,19 @@ struct SettingsView: View {
         @Bindable var settings = app.settings
 
         Form {
+            // Role ------------------------------------------------------------
+            Section("Your Role") {
+                Picker("Role", selection: $settings.role) {
+                    Text("Select a role…").tag(Settings.Role?.none)
+                    ForEach(Settings.Role.allCases) { r in
+                        Text(r.label).tag(Settings.Role?.some(r))
+                    }
+                }
+                Text("Tailors live guidance and the summary to how you sell.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
             // AI provider -----------------------------------------------------
             Section("AI Provider") {
                 Picker("Provider", selection: $settings.provider) {
@@ -31,6 +44,16 @@ struct SettingsView: View {
                 TextField("Model (optional, blank = provider default)", text: $settings.llmModel)
             }
 
+            // AI assistance ---------------------------------------------------
+            Section("AI Assistance") {
+                Toggle("Live guidance during calls", isOn: $settings.aiAssistance)
+                Text(settings.aiAssistance
+                     ? "Surfaces real-time active-listening suggestions while you record."
+                     : "Off: the call is only transcribed and summarized — no live suggestions.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
             // Temporal --------------------------------------------------------
             Section("Temporal") {
                 Toggle("Use Temporal Cloud", isOn: $settings.useTemporalCloud)
@@ -38,11 +61,15 @@ struct SettingsView: View {
                     TextField("Address (e.g. ns.acct.tmprl.cloud:7233)", text: $settings.temporalAddress)
                     TextField("Namespace (e.g. your-ns.acct)", text: $settings.temporalNamespace)
                     SecureField("Cloud API key (required)", text: $settings.temporalApiKey)
-                    TextField("Task queue", text: $settings.temporalTaskQueue)
                 } else {
                     Label("Local dev server · localhost:7233", systemImage: "desktopcomputer")
                         .foregroundStyle(Theme.textSecondary)
-                    TextField("Task queue", text: $settings.temporalTaskQueue)
+                }
+                LabeledContent("Task queue") {
+                    Text(TemporalConfig.deviceTaskQueue)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.textSecondary)
+                        .textSelection(.enabled)
                 }
             }
 
@@ -60,6 +87,21 @@ struct SettingsView: View {
                         Text("Analyze every")
                         Spacer()
                         Text("\(settings.analyzeEveryNChunks) chunk\(settings.analyzeEveryNChunks == 1 ? "" : "s")")
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+                HStack {
+                    Text("Guidance warmup")
+                    Spacer()
+                    TextField("", value: $settings.warmupMinutes, format: .number)
+                        .frame(width: 70).multilineTextAlignment(.trailing)
+                    Text("minutes").foregroundStyle(Theme.textSecondary)
+                }
+                Stepper(value: $settings.maxActiveSuggestions, in: 1...20) {
+                    HStack {
+                        Text("Max live suggestions")
+                        Spacer()
+                        Text("\(settings.maxActiveSuggestions)")
                             .foregroundStyle(Theme.textSecondary)
                     }
                 }
@@ -100,7 +142,7 @@ struct SettingsView: View {
                     .disabled(!settings.isValid || isApplying)
                 }
                 if !settings.isValid {
-                    Text("An API key is required for the selected provider" +
+                    Text("Select your role and an API key for the selected provider" +
                          (settings.useTemporalCloud ? ", and Temporal Cloud needs an address, namespace, and API key." : "."))
                         .font(.caption)
                         .foregroundStyle(Theme.mediumPriority)
@@ -108,7 +150,9 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 560)
+        .frame(maxWidth: 720, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .background(Theme.background)
     }
 
     private func apply() {
