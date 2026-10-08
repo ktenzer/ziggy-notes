@@ -9,6 +9,9 @@ packages:
   swift-temporal-sdk:
     url: https://github.com/apple/swift-temporal-sdk
     branch: main
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    from: "0.9.0"
 
 settings:
   base:
@@ -27,6 +30,16 @@ targets:
     platform: macOS
     sources:
       - path: ZiggyNotes
+      # The in-process Swift worker compiles into the app target so it can reuse
+      # the app's DTOs and run hands-off capture.
+      - path: ../worker
+        excludes:
+          - "Resources/**"
+      # Bundled worker resources: role guidance markdown (ae/sa/bdr) and, when
+      # present, the offline WhisperKit model folder (whisper-models/). Files are
+      # copied into the app's Resources root.
+      - path: ../worker/Resources
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.temporal.ziggynotes
@@ -36,9 +49,12 @@ targets:
         CODE_SIGN_ENTITLEMENTS: ZiggyNotes/ZiggyNotes.entitlements
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Ziggy Notes records meeting audio (mic + system output) to transcribe and summarize your calls."
+        INFOPLIST_KEY_NSScreenCaptureUsageDescription: "Ziggy Notes captures your meeting's system audio (the people you're talking to) so it can transcribe and summarize the call."
         INFOPLIST_KEY_NSHumanReadableCopyright: "Ziggy Notes"
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.productivity"
         INFOPLIST_KEY_LSUIElement: "NO"
     dependencies:
       - package: swift-temporal-sdk
         product: Temporal
+      - package: WhisperKit
+        product: WhisperKit

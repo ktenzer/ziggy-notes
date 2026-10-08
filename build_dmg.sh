@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
-# Build Ziggy Notes and package a drag-to-install DMG (with the app icon as the
-# volume icon) into ~/Documents.
+# Build Ziggy Notes (the SwiftUI app AND the in-process Swift worker, which
+# compiles into the same target) and package a drag-to-install DMG (with the app
+# icon as the volume icon) into ~/Documents.
+#
+# Run from the ziggy-notes/ root. The Xcode project lives under ui/.
 #
 # Usage:
 #   ./build_dmg.sh            # Debug build
@@ -10,13 +13,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+UI_DIR="$SCRIPT_DIR/ui"
+cd "$UI_DIR"
 
 CONFIG="${1:-Debug}"
 APP_NAME="Ziggy Notes"
 SCHEME="ZiggyNotes"
 PROJECT="ZiggyNotes.xcodeproj"
-BUILD_DIR="$SCRIPT_DIR/.build"
+BUILD_DIR="$UI_DIR/.build"
 PRODUCTS_DIR="$BUILD_DIR/Build/Products/$CONFIG"
 APP_PATH="$PRODUCTS_DIR/$APP_NAME.app"
 DMG_OUT="$HOME/Documents/ZiggyNotes.dmg"
@@ -50,7 +54,7 @@ echo "    built: $APP_PATH"
 # Build an .icns for the DMG volume icon from the AppIcon asset PNGs.
 # ----------------------------------------------------------------------------
 echo "==> Creating volume icon"
-ICON_SRC="$SCRIPT_DIR/ZiggyNotes/Assets.xcassets/AppIcon.appiconset"
+ICON_SRC="$UI_DIR/ZiggyNotes/Assets.xcassets/AppIcon.appiconset"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 ICONSET="$WORK/ZiggyNotes.iconset"

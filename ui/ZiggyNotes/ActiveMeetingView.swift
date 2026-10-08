@@ -106,8 +106,8 @@ struct ActiveMeetingView: View {
 
     private func speakerColor(_ speaker: String) -> Color {
         let s = speaker.lowercased()
-        if s.contains("temporal") { return Theme.purple }
-        if s.contains("customer") { return Theme.textSecondary }
+        if s == "you" || s.contains("temporal") { return Theme.purple }
+        if s == "other" || s.contains("customer") { return Theme.textSecondary }
         return Theme.purpleDark
     }
 

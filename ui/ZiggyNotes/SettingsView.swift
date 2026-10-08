@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 
 /// Preferences window (⌘,). Edits AI provider / key, optional Temporal Cloud,
-/// capture tuning, and the summary output directory — then writes `.env` and
-/// restarts the worker.
+/// capture tuning, and the summary output directory — persisted to UserDefaults,
+/// then restarts the in-process worker.
 struct SettingsView: View {
     @Environment(AppModel.self) private var app
     @State private var isApplying = false
@@ -121,6 +121,56 @@ struct SettingsView: View {
                 }
             }
 
+            // Advanced --------------------------------------------------------
+            Section("Advanced") {
+                Picker("Whisper model", selection: $settings.whisperModel) {
+                    ForEach(Settings.whisperModels, id: \.self) { m in
+                        Text(m).tag(m)
+                    }
+                }
+                Text("Larger models are more accurate but slower. Changing this downloads the model once (unless bundled offline).")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+
+                HStack {
+                    Text("Audio sample rate")
+                    Spacer()
+                    TextField("", value: $settings.audioSampleRate, format: .number.grouping(.never))
+                        .frame(width: 80).multilineTextAlignment(.trailing)
+                    Text("Hz").foregroundStyle(Theme.textSecondary)
+                }
+                Text("WhisperKit expects 16000 Hz — only change if you know what you're doing.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+
+                HStack {
+                    Text("Silence auto-stop")
+                    Spacer()
+                    TextField("", value: $settings.silenceTimeoutSeconds, format: .number)
+                        .frame(width: 70).multilineTextAlignment(.trailing)
+                    Text("seconds").foregroundStyle(Theme.textSecondary)
+                }
+                Text("Stops capture after this much continuous silence.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+
+                HStack {
+                    Text("Silence peak threshold")
+                    Spacer()
+                    TextField("", value: $settings.silencePeakThreshold, format: .number)
+                        .frame(width: 80).multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    Text("Silence RMS threshold")
+                    Spacer()
+                    TextField("", value: $settings.silenceRmsThreshold, format: .number)
+                        .frame(width: 80).multilineTextAlignment(.trailing)
+                }
+                Text("A chunk counts as silence when both its peak and RMS levels stay below these values.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
             // Apply -----------------------------------------------------------
             Section {
                 HStack {
@@ -158,7 +208,7 @@ struct SettingsView: View {
     private func apply() {
         app.settings.save()
         isApplying = true
-        statusMessage = "Writing .env and restarting worker…"
+        statusMessage = "Saving settings and restarting worker…"
         Task {
             await app.reload()
             isApplying = false

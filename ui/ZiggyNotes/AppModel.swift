@@ -52,7 +52,6 @@ final class AppModel {
 
     func attach(context: ModelContext) {
         self.modelContext = context
-        settings.hydrateFromEnvIfNeeded(projectDir: worker.projectDir)
     }
 
     var isReady: Bool { phase == .ready }
@@ -74,10 +73,13 @@ final class AppModel {
 
         phase = .requestingMic
         _ = await worker.requestMicrophoneAccess()
+        // Screen Recording permission is needed for hands-off system-audio capture
+        // (the customer side) via ScreenCaptureKit. Best-effort prompt on first run.
+        worker.requestScreenCaptureAccess()
 
         phase = .startingWorker
         do {
-            try await worker.start(environment: settings.workerEnvironment())
+            try await worker.start(temporal: config, worker: settings.workerConfig())
         } catch {
             phase = .failed("Worker did not start.\n\n\(error)")
             return
@@ -96,13 +98,12 @@ final class AppModel {
         startPolling()
     }
 
-    /// Applies updated settings: writes `.env`, restarts the worker, and reconnects.
+    /// Applies updated settings: restarts the in-process worker and reconnects.
     func reload() async {
         pollTask?.cancel()
         pollTask = nil
         worker.stop()
         await client.shutdown()
-        try? settings.writeEnv(projectDir: worker.projectDir)
         await bootstrap()
     }
 
