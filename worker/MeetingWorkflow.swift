@@ -40,11 +40,20 @@ struct MeetingWorkflow {
 
     /// Append a transcribed chunk (from the capture activity). Seeds the resolved
     /// label with the source-based default; `identify_speakers` may upgrade it.
+    ///
+    /// The workflow — not the capture activity — owns the chunk index: it assigns
+    /// the next monotonic index on arrival. This is essential because the capture
+    /// activity resets its local counter to 0 whenever it restarts (worker
+    /// restart/crash). If we trusted that counter, post-restart chunks would reuse
+    /// indices below the UI's polling cursor (`sinceChunk`) and silently vanish
+    /// from the transcript — even though signals keep arriving.
     @WorkflowSignal(name: "add_transcript_chunk")
     mutating func addTranscriptChunk(input: TranscriptChunk) {
-        chunks.append(input)
-        let label = input.speaker.isEmpty ? defaultLabel(input.source) : input.speaker
-        if labels[input.index] == nil { labels[input.index] = label }
+        var chunk = input
+        chunk.index = chunks.count
+        chunks.append(chunk)
+        let label = chunk.speaker.isEmpty ? defaultLabel(chunk.source) : chunk.speaker
+        if labels[chunk.index] == nil { labels[chunk.index] = label }
     }
 
     /// First stop finalizes (summarize + exit); a second stop escalates to abort

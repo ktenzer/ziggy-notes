@@ -162,6 +162,9 @@ struct ZiggyActivities {
         var totalSeconds = 0.0
         var silenceElapsed = 0.0
         var stopReason = "unknown"
+        // Last accepted transcription per source, to drop consecutive duplicates
+        // (a classic Whisper silence-hallucination artifact).
+        var lastText: [String: String] = [:]
 
         do {
             while true {
@@ -198,6 +201,20 @@ struct ZiggyActivities {
                         logger.info("[\(source)] audio present but transcriber returned no text (VAD filtered?)")
                         continue
                     }
+                    // Drop trivial output (punctuation/empty after stripping).
+                    let alnum = text.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+                    if alnum.count < 2 {
+                        logger.info("[\(source)] dropping trivial transcription: \(text)")
+                        continue
+                    }
+                    // Drop a verbatim repeat of the previous accepted line from the
+                    // same source — real back-to-back identical sentences don't happen,
+                    // but hallucinated phrases do.
+                    if let prev = lastText[source], prev.caseInsensitiveCompare(text) == .orderedSame {
+                        logger.info("[\(source)] dropping duplicate of previous chunk: \(text)")
+                        continue
+                    }
+                    lastText[source] = text
                     anySpeech = true
                     let chunk = TranscriptChunk(
                         index: chunkIndex, source: source, speaker: defaultLabel(source),

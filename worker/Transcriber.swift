@@ -39,15 +39,27 @@ final class Transcriber: @unchecked Sendable {
     }
 
     /// Transcribe one mono 16 kHz Float32 window into a single trimmed string.
+    ///
+    /// Hardened against Whisper's well-known tendency to hallucinate canned
+    /// phrases on silence/low-level audio:
+    ///   * `chunkingStrategy: .vad` — only voiced regions are decoded, so pure
+    ///     silence never reaches the model (the main source of phantom lines).
+    ///   * quality gates (`compressionRatioThreshold` catches repetitive/looping
+    ///     output, `logProbThreshold` drops low-confidence output, `noSpeechThreshold`
+    ///     flags no-speech), with a small temperature fallback so the gates engage.
     func transcribe(_ audio: [Float], language: String?) async throws -> String {
         guard let whisper else { return "" }
         let options = DecodingOptions(
             task: .transcribe,
             language: language,
-            temperatureFallbackCount: 0,
+            temperatureFallbackCount: 2,
             usePrefillPrompt: false,
             skipSpecialTokens: true,
-            withoutTimestamps: true
+            withoutTimestamps: true,
+            compressionRatioThreshold: 2.4,
+            logProbThreshold: -1.0,
+            noSpeechThreshold: 0.6,
+            chunkingStrategy: .vad
         )
         let results = try await whisper.transcribe(audioArray: audio, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ")
