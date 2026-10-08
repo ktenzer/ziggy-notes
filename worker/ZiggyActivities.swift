@@ -19,11 +19,8 @@ struct ZiggyActivities {
     private static let analysisHint = """
     {"observations": [{"id": "", "kind": "bring_up|explain_feature|address_objection|answer_question|risk|next_step", "title": "string", "detail": "string", "priority": "high|medium|low"}]}
     """
-    private static let identityHint = """
-    {"assignments": [{"index": 0, "label": "string", "name": "string or null", "org": "temporal|customer|unknown"}], "roster": ["string"]}
-    """
     private static let summaryHint = """
-    {"summary": "string", "key_points": ["string"], "action_items": ["string"], "next_steps": ["string"], "feedback": "string", "score": 0}
+    {"summary": "string", "attendees": ["string"], "key_points": ["string"], "action_items": ["string"], "next_steps": ["string"], "feedback": "string", "score": 0}
     """
 
     // MARK: - LLM activities
@@ -36,6 +33,7 @@ struct ZiggyActivities {
             transcript: input.transcript,
             callContext: input.callContext,
             currentSuggestions: input.currentSuggestions,
+            dismissedSuggestions: input.dismissedSuggestions,
             maxSuggestions: input.maxSuggestions
         )
         let systemPrompt = Prompts.analysisSystemPrompt(RoleGuidance.load(config.role))
@@ -48,40 +46,27 @@ struct ZiggyActivities {
         return result
     }
 
-    /// Speaker attribution. Mirrors `activities/identity.py`.
-    @Activity(name: "identify_speakers")
-    func identifySpeakers(input: IdentityInput) async throws -> IdentityResult {
-        let userPrompt = Prompts.buildIdentityUserPrompt(
-            title: input.title,
-            transcript: input.transcript,
-            callContext: input.callContext,
-            repName: input.repName
-        )
-        let result: IdentityResult = try await llm.structuredCompletion(
-            system: Prompts.identitySystemPrompt, user: userPrompt, jsonHint: Self.identityHint, as: IdentityResult.self
-        )
-        ActivityExecutionContext.current?.logger.info(
-            "identify_speakers: \(result.assignments.count) assignment(s), roster=\(result.roster)"
-        )
-        return result
-    }
-
-    /// Final meeting summary. Mirrors `activities/summary.py`.
+    /// Final meeting summary. Mirrors `activities/summary.py`. Also identifies the
+    /// call attendees as part of the same LLM call (there is no separate
+    /// `identify_speakers` pass). The app user is named from the typed rep name
+    /// when provided, else the local macOS account's full name.
     @Activity(name: "summarize_meeting")
     func summarizeMeeting(input: SummaryInput) async throws -> MeetingSummary {
+        let userName = (input.repName?.isEmpty == false) ? input.repName : NSFullUserName()
         let userPrompt = Prompts.buildSummaryUserPrompt(
             title: input.title,
             transcript: input.transcript,
             callContext: input.callContext,
             guidelines: input.guidelines,
-            structure: input.structure
+            structure: input.structure,
+            userName: userName
         )
         let systemPrompt = Prompts.summarySystemPromptWithRole(RoleGuidance.load(config.role))
         let summary: MeetingSummary = try await llm.structuredCompletion(
             system: systemPrompt, user: userPrompt, jsonHint: Self.summaryHint, as: MeetingSummary.self
         )
         ActivityExecutionContext.current?.logger.info(
-            "summary produced: \(summary.keyPoints.count) key point(s), \(summary.actionItems.count) action item(s), \(summary.nextSteps.count) next step(s), score=\(summary.score)"
+            "summary produced: \(summary.attendees.count) attendee(s), \(summary.keyPoints.count) key point(s), \(summary.actionItems.count) action item(s), \(summary.nextSteps.count) next step(s), score=\(summary.score)"
         )
         return summary
     }
@@ -207,6 +192,14 @@ struct ZiggyActivities {
                         logger.info("[\(source)] dropping trivial transcription: \(text)")
                         continue
                     }
+                    // Drop Whisper non-speech hallucinations on silence/noise:
+                    // lines that are mostly bracketed sound-event markers
+                    // ("*spoiled*", "(applause)", "[music]") or a single token
+                    // repeated many times. These are never real speech.
+                    if Self.looksLikeHallucination(text) {
+                        logger.info("[\(source)] dropping hallucinated non-speech line: \(text)")
+                        continue
+                    }
                     // Drop a verbatim repeat of the previous accepted line from the
                     // same source — real back-to-back identical sentences don't happen,
                     // but hallucinated phrases do.
@@ -216,9 +209,13 @@ struct ZiggyActivities {
                     }
                     lastText[source] = text
                     anySpeech = true
+                    // Actual time of day this window finished capturing (epoch
+                    // seconds); the UI renders it in the user's timezone.
+                    let capturedAt = Date().timeIntervalSince1970
                     let chunk = TranscriptChunk(
                         index: chunkIndex, source: source, speaker: defaultLabel(source),
-                        text: text, startSeconds: windowStart, endSeconds: windowEnd
+                        text: text, startSeconds: windowStart, endSeconds: windowEnd,
+                        capturedAt: capturedAt
                     )
                     try await handle.signal(signalName: "add_transcript_chunk", input: chunk)
                     logger.info("[\(source)] signaled chunk \(chunkIndex): \(text)")
@@ -253,6 +250,32 @@ struct ZiggyActivities {
             chunkCount: chunkIndex, durationSeconds: totalSeconds, stopReason: stopReason,
             micCaptured: capture.micCaptured, systemCaptured: capture.systemCaptured
         )
+    }
+
+    /// Heuristic detector for Whisper non-speech hallucinations (emitted on
+    /// silence/noise): text that is mostly bracketed sound-event markers like
+    /// `*word*`, `(word)`, `[word]`, or the same token repeated over and over.
+    static func looksLikeHallucination(_ text: String) -> Bool {
+        let tokens = text
+            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+            .map(String.init)
+        guard !tokens.isEmpty else { return true }
+
+        func isMarker(_ t: String) -> Bool {
+            (t.hasPrefix("*") && t.hasSuffix("*"))
+                || (t.hasPrefix("(") && t.hasSuffix(")"))
+                || (t.hasPrefix("[") && t.hasSuffix("]"))
+        }
+        // Mostly bracketed sound-event markers -> not real speech.
+        let markerCount = tokens.filter(isMarker).count
+        if Double(markerCount) / Double(tokens.count) >= 0.5 { return true }
+
+        // Extreme repetition: several tokens but very few distinct ones.
+        if tokens.count >= 6 {
+            let distinct = Set(tokens.map { $0.lowercased() }).count
+            if Double(distinct) / Double(tokens.count) <= 0.34 { return true }
+        }
+        return false
     }
 
     private static func rms(_ audio: [Float]) -> Float {

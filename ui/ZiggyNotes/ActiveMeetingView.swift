@@ -92,9 +92,14 @@ struct ActiveMeetingView: View {
 
     private func transcriptRow(_ line: TranscriptLineRecord) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(line.speaker.isEmpty ? "Speaker" : line.speaker)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(speakerColor(line.speaker))
+            HStack(spacing: 6) {
+                Text(line.speaker.isEmpty ? "Speaker" : line.speaker)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(speakerColor(line.speaker))
+                Text(line.timestamp)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textSecondary)
+            }
             Text(line.text)
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.textPrimary)
@@ -136,7 +141,9 @@ struct ActiveMeetingView: View {
                             .padding(.top, 24)
                     }
                     ForEach(sortedSuggestions) { s in
-                        SuggestionCardView(title: s.title, detail: s.detail, priority: s.priority, kind: s.kind)
+                        SuggestionCardView(title: s.title, detail: s.detail, priority: s.priority, kind: s.kind) {
+                            Task { await app.dismissSuggestion(meeting, s) }
+                        }
                     }
                 }
                 .padding(12)

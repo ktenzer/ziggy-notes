@@ -93,10 +93,10 @@ struct LLMClient: Sendable {
             throw ApplicationError(message: "ANTHROPIC_API_KEY is not set", type: "NoLLMKey")
         }
         let sys = system + "\n\nReturn ONLY a single JSON object that matches this shape (no markdown, no prose):\n" + jsonHint
-        // identify_speakers returns one object per transcript line, so the JSON
-        // grows with the whole call. A small cap truncates the response mid-JSON
-        // on longer meetings ("Unexpected end of file"); allow the model's full
-        // output budget instead.
+        // The summary can be sizable (summary + attendees + key points + action
+        // items + next steps + feedback). A small cap truncates the response
+        // mid-JSON on longer meetings ("Unexpected end of file"); allow the
+        // model's full output budget instead.
         let maxTokens = 8192
         let body: [String: Any] = [
             "model": config.model(for: "anthropic"),

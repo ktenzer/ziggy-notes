@@ -38,6 +38,7 @@ final class MeetingRecord {
 
     // Summary fields
     var summaryText: String
+    var attendees: [String] = []
     var keyPoints: [String]
     var actionItems: [String]
     var nextSteps: [String]
@@ -67,6 +68,7 @@ final class MeetingRecord {
         self.createdAt = createdAt
         self.stateRaw = state.rawValue
         self.summaryText = ""
+        self.attendees = []
         self.keyPoints = []
         self.actionItems = []
         self.nextSteps = []
@@ -104,13 +106,28 @@ final class TranscriptLineRecord {
     var speaker: String
     var text: String
     var startSeconds: Double
+    // Wall-clock capture time (seconds since the Unix epoch); 0 when unknown.
+    var capturedAt: Double = 0
     var meeting: MeetingRecord?
 
-    init(index: Int, speaker: String, text: String, startSeconds: Double) {
+    init(index: Int, speaker: String, text: String, startSeconds: Double, capturedAt: Double = 0) {
         self.index = index
         self.speaker = speaker
         self.text = text
         self.startSeconds = startSeconds
+        self.capturedAt = capturedAt
+    }
+
+    /// Actual time of day this line was captured, in the user's timezone/locale
+    /// (e.g. "12:55 PM"). Falls back to elapsed `m:ss` for rows captured before
+    /// wall-clock timestamps were recorded.
+    var timestamp: String {
+        if capturedAt > 0 {
+            return Date(timeIntervalSince1970: capturedAt)
+                .formatted(date: .omitted, time: .shortened)
+        }
+        let total = Int(startSeconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

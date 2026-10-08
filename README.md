@@ -24,13 +24,12 @@ app ─ start ─▶ MeetingWorkflow ─ get_updates query (polled) ─▶ app U
 app ─ signal ─▶   │  (keeps transcript + ranked suggestion board)
                   │
                   ├─▶ capture_audio (long-running Activity)
-                  │     mic (AVAudioEngine) = Temporal
-                  │     system audio (ScreenCaptureKit) = Customer
+                  │     mic (AVAudioEngine) = You
+                  │     system audio (ScreenCaptureKit) = Other
                   │     WhisperKit per chunk ─ signals each chunk back ▲
                   │
-                  ├─▶ identify_speakers (every N chunks, LLM)
                   ├─▶ analyze_conversation (every N chunks, LLM) ─▶ suggestions
-                  └─▶ summarize_meeting + create_google_doc (on stop/silence)
+                  └─▶ summarize_meeting (identifies attendees) + create_google_doc (on stop/silence)
 ```
 
 - **One durable `MeetingWorkflow` per meeting** orchestrates everything and keeps
@@ -39,7 +38,7 @@ app ─ signal ─▶   │  (keeps transcript + ranked suggestion board)
   app is the only consumer).
 - **`capture_audio`** is a single long-running, heartbeating Activity so there are
   no gaps in the recording. It captures the microphone (you, the rep) via
-  `AVAudioEngine` **and** the meeting's system audio (the customer) via
+  `AVAudioEngine` **and** the meeting's system audio (the remote side) via
   **ScreenCaptureKit** — no loopback driver like BlackHole, and nothing to
   configure; it works with AirPods or any output device. Each `CHUNK_SECONDS`
   window is transcribed on-device with **WhisperKit** and pushed back to the
@@ -47,8 +46,6 @@ app ─ signal ─▶   │  (keeps transcript + ranked suggestion board)
   mid-meeting, capture is **rescheduled and resumes** (it distinguishes a worker
   shutdown from a `stop_recording`), so the meeting only ends on a stop Signal or
   the silence timeout — never because the worker bounced.
-- **`identify_speakers`** runs every few chunks (and once more before the summary)
-  to attribute each line to a speaker. See [Speaker identification](#speaker-identification).
 - **`analyze_conversation`** runs every few chunks (once the conversation has
   warmed up for `ANALYSIS_WARMUP_MINUTES` of elapsed call time) and maintains a
   live, ranked board of at most `MAX_ACTIVE_SUGGESTIONS`: each pass returns the
@@ -60,33 +57,25 @@ app ─ signal ─▶   │  (keeps transcript + ranked suggestion board)
 
 ## Speaker identification
 
-Who-said-what is resolved with a two-layer approach and a graceful fallback
-cascade:
+Who-said-what is resolved by **audio source**, and attendees are named **once at
+the end** as part of summarization:
 
-1. **Audio source (ground truth).** Every transcript chunk is tagged with its
-   source: the **mic** is always the Temporal rep's side, and the **system audio
-   output** is the remote/customer side.
-2. **Name attribution (best-effort).** The `identify_speakers` activity feeds the
-   cumulative transcript (each line tagged with its index + source + timestamp) to
-   the LLM, which extracts names from self-introductions ("my name is John", "this
-   is Sarah from Acme") and attributes each line to a person.
+1. **Live transcript (by source).** Every transcript chunk is tagged with its
+   source: the **mic** is always you (labeled **"You"**) and the **system audio
+   output** is the remote side (labeled **"Other"**). The live transcript keeps
+   these labels throughout the call — there is no per-chunk relabeling.
+2. **Attendees (at the end).** `summarize_meeting` makes a single LLM call that,
+   in addition to the summary, returns an **`attendees`** list. It extracts names
+   from self-introductions ("my name is John", "this is Sarah from Acme") and the
+   call context, tags them with "(Temporal)"/"(Customer)" where the side is clear,
+   and includes you by name (taken from the rep name you entered when starting the
+   note, or the local macOS account's full name). The attendees are shown at the
+   top of the finished summary.
 
-The resolved label for each line follows this cascade:
-
-```
-name known        → "John (Temporal)" / "Sarah (Customer)"  (or just "John" if org unclear)
-name unknown       → source fallback:  mic → "Temporal",  output → "Customer"
-```
-
-So if people introduce themselves you get real names; if they don't, you still
-know the side ("Temporal" vs "Customer"). The mic is always "Temporal" (optionally
-your rep's name, set when starting a note).
-
-**Limitation:** this separates *sides* reliably and names people who introduce
-themselves, but it does not tell apart multiple distinct voices sharing one
-channel (e.g. three customer attendees on the same call audio all start as
-"Customer"). True per-voice separation would require audio diarization, which can
-be added later as another activity without changing this contract.
+**Limitation:** the live transcript only separates *sides* (You vs Other); it does
+not tell apart multiple distinct remote voices sharing one channel. True per-voice
+separation would require audio diarization, which can be added later as another
+activity without changing this contract.
 
 ## Roles
 

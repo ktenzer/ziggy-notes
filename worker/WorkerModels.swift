@@ -32,21 +32,38 @@ struct TranscriptChunk: Codable, Sendable, Hashable {
     var text: String
     var startSeconds: Double
     var endSeconds: Double
+    /// Wall-clock time this window was captured, as seconds since the Unix epoch.
+    /// Stamped by the (non-deterministic) capture activity so the UI can show the
+    /// actual time of day in the user's timezone. 0 when unknown.
+    var capturedAt: Double
 
     enum CodingKeys: String, CodingKey {
         case index, source, speaker, text
         case startSeconds = "start_seconds"
         case endSeconds = "end_seconds"
+        case capturedAt = "captured_at"
     }
 
     init(index: Int, source: String, speaker: String = "", text: String,
-         startSeconds: Double = 0, endSeconds: Double = 0) {
+         startSeconds: Double = 0, endSeconds: Double = 0, capturedAt: Double = 0) {
         self.index = index
         self.source = source
         self.speaker = speaker
         self.text = text
         self.startSeconds = startSeconds
         self.endSeconds = endSeconds
+        self.capturedAt = capturedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        index = try c.decodeIfPresent(Int.self, forKey: .index) ?? 0
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
+        speaker = try c.decodeIfPresent(String.self, forKey: .speaker) ?? ""
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        startSeconds = try c.decodeIfPresent(Double.self, forKey: .startSeconds) ?? 0
+        endSeconds = try c.decodeIfPresent(Double.self, forKey: .endSeconds) ?? 0
+        capturedAt = try c.decodeIfPresent(Double.self, forKey: .capturedAt) ?? 0
     }
 }
 
@@ -120,19 +137,50 @@ struct ZiggyObservation: Codable, Sendable, Hashable {
     }
 }
 
+/// Input to the `dismiss_suggestion` signal: the stable id of the suggestion the
+/// user dismissed, so the workflow drops it and suppresses it (and equivalents)
+/// for the rest of the meeting.
+struct DismissSuggestionInput: Codable, Sendable {
+    var suggestionId: String
+    enum CodingKeys: String, CodingKey { case suggestionId = "suggestion_id" }
+}
+
 /// Input to `analyze_conversation`. Mirrors `ziggy.models.AnalysisInput`.
 struct AnalysisInput: Codable, Sendable {
     var title: String
     var transcript: String
     var callContext: String?
     var currentSuggestions: [ZiggyObservation]
+    var dismissedSuggestions: [ZiggyObservation]
     var maxSuggestions: Int
 
     enum CodingKeys: String, CodingKey {
         case title, transcript
         case callContext = "call_context"
         case currentSuggestions = "current_suggestions"
+        case dismissedSuggestions = "dismissed_suggestions"
         case maxSuggestions = "max_suggestions"
+    }
+
+    init(title: String, transcript: String, callContext: String? = nil,
+         currentSuggestions: [ZiggyObservation] = [], dismissedSuggestions: [ZiggyObservation] = [],
+         maxSuggestions: Int) {
+        self.title = title
+        self.transcript = transcript
+        self.callContext = callContext
+        self.currentSuggestions = currentSuggestions
+        self.dismissedSuggestions = dismissedSuggestions
+        self.maxSuggestions = maxSuggestions
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        transcript = try c.decodeIfPresent(String.self, forKey: .transcript) ?? ""
+        callContext = try c.decodeIfPresent(String.self, forKey: .callContext)
+        currentSuggestions = try c.decodeIfPresent([ZiggyObservation].self, forKey: .currentSuggestions) ?? []
+        dismissedSuggestions = try c.decodeIfPresent([ZiggyObservation].self, forKey: .dismissedSuggestions) ?? []
+        maxSuggestions = try c.decodeIfPresent(Int.self, forKey: .maxSuggestions) ?? 0
     }
 }
 
@@ -149,57 +197,6 @@ struct AnalysisResult: Codable, Sendable {
     enum CodingKeys: String, CodingKey { case observations }
 }
 
-/// One speaker attribution. Mirrors `ziggy.models.SpeakerAssignment`.
-struct SpeakerAssignment: Codable, Sendable {
-    var index: Int
-    var label: String
-    var name: String?
-    var org: String
-
-    init(index: Int, label: String, name: String? = nil, org: String = "unknown") {
-        self.index = index; self.label = label; self.name = name; self.org = org
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        index = try c.decodeIfPresent(Int.self, forKey: .index) ?? -1
-        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
-        name = try c.decodeIfPresent(String.self, forKey: .name)
-        org = try c.decodeIfPresent(String.self, forKey: .org) ?? "unknown"
-    }
-    enum CodingKeys: String, CodingKey { case index, label, name, org }
-}
-
-/// Input to `identify_speakers`. Mirrors `ziggy.models.IdentityInput`.
-struct IdentityInput: Codable, Sendable {
-    var title: String
-    var transcript: String
-    var callContext: String?
-    var repName: String?
-
-    enum CodingKeys: String, CodingKey {
-        case title, transcript
-        case callContext = "call_context"
-        case repName = "rep_name"
-    }
-}
-
-/// Output of `identify_speakers`. Mirrors `ziggy.models.IdentityResult`.
-struct IdentityResult: Codable, Sendable {
-    var assignments: [SpeakerAssignment]
-    var roster: [String]
-
-    init(assignments: [SpeakerAssignment] = [], roster: [String] = []) {
-        self.assignments = assignments; self.roster = roster
-    }
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        assignments = try c.decodeIfPresent([SpeakerAssignment].self, forKey: .assignments) ?? []
-        roster = try c.decodeIfPresent([String].self, forKey: .roster) ?? []
-    }
-    enum CodingKeys: String, CodingKey { case assignments, roster }
-}
-
 /// Input to `summarize_meeting`. Mirrors `ziggy.models.SummaryInput`.
 struct SummaryInput: Codable, Sendable {
     var title: String
@@ -207,17 +204,20 @@ struct SummaryInput: Codable, Sendable {
     var callContext: String?
     var guidelines: String?
     var structure: String?
+    var repName: String?
 
     enum CodingKeys: String, CodingKey {
         case title, transcript
         case callContext = "call_context"
         case guidelines, structure
+        case repName = "rep_name"
     }
 }
 
 /// Final meeting summary + coaching. Mirrors `ziggy.models.MeetingSummary`.
 struct MeetingSummary: Codable, Sendable, Hashable {
     var summary: String
+    var attendees: [String]
     var keyPoints: [String]
     var actionItems: [String]
     var nextSteps: [String]
@@ -225,16 +225,17 @@ struct MeetingSummary: Codable, Sendable, Hashable {
     var score: Int
 
     enum CodingKeys: String, CodingKey {
-        case summary
+        case summary, attendees
         case keyPoints = "key_points"
         case actionItems = "action_items"
         case nextSteps = "next_steps"
         case feedback, score
     }
 
-    init(summary: String = "", keyPoints: [String] = [], actionItems: [String] = [],
-         nextSteps: [String] = [], feedback: String = "", score: Int = 0) {
+    init(summary: String = "", attendees: [String] = [], keyPoints: [String] = [],
+         actionItems: [String] = [], nextSteps: [String] = [], feedback: String = "", score: Int = 0) {
         self.summary = summary
+        self.attendees = attendees
         self.keyPoints = keyPoints
         self.actionItems = actionItems
         self.nextSteps = nextSteps
@@ -245,6 +246,7 @@ struct MeetingSummary: Codable, Sendable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        attendees = try c.decodeIfPresent([String].self, forKey: .attendees) ?? []
         keyPoints = try c.decodeIfPresent([String].self, forKey: .keyPoints) ?? []
         actionItems = try c.decodeIfPresent([String].self, forKey: .actionItems) ?? []
         nextSteps = try c.decodeIfPresent([String].self, forKey: .nextSteps) ?? []
@@ -312,11 +314,23 @@ struct TranscriptRow: Codable, Sendable {
     var text: String
     var startSeconds: Double
     var endSeconds: Double
+    var capturedAt: Double
 
     enum CodingKeys: String, CodingKey {
         case index, speaker, text
         case startSeconds = "start_seconds"
         case endSeconds = "end_seconds"
+        case capturedAt = "captured_at"
+    }
+
+    init(index: Int, speaker: String, text: String,
+         startSeconds: Double, endSeconds: Double, capturedAt: Double = 0) {
+        self.index = index
+        self.speaker = speaker
+        self.text = text
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.capturedAt = capturedAt
     }
 }
 

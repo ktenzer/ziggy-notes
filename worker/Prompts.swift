@@ -25,6 +25,7 @@ enum Prompts {
       - DROP a current suggestion -- by simply omitting it -- once it has been addressed/acted on by the rep, or is no longer relevant given the latest conversation. Dropping is how applied advice disappears.
       - ADD a new suggestion by including it with an EMPTY "id" ("").
       - Avoid churn: only drop something if it is clearly addressed or irrelevant; don't drop and immediately re-add the same point.
+      - NEVER re-propose a suggestion the user has explicitly dismissed (listed as dismissed in the user message), nor anything essentially equivalent to it.
 
     Ranking:
       - Set each suggestion's "priority" to high, medium, or low by how urgent/valuable it is to say NEXT.
@@ -40,33 +41,13 @@ enum Prompts {
     static let summarySystemPrompt = """
     You are "Ziggy", an expert Temporal sales engineer and an excellent meeting note-taker (in the style of Abridge's clinical summaries, adapted to B2B sales). You are given the full transcript of a Temporal sales call. Produce a concise, high-signal summary a busy account team can act on.
 
-    Be accurate and grounded strictly in the transcript. Be concise: no fluff, no restating the whole call. Capture decisions, concerns, and commitments. Where Temporal technical topics came up, summarize them correctly. Transcript lines are labeled by speaker: "You" is the app user (a Temporal rep), other participants use real names with "(Temporal)"/"(Customer)" where known, and "Other" for an unidentified remote participant; attribute decisions/commitments to the right party.
+    Be accurate and grounded strictly in the transcript. Be concise: no fluff, no restating the whole call. Capture decisions, concerns, and commitments. Where Temporal technical topics came up, summarize them correctly. Transcript lines are labeled by audio source: "You" is the app user (the Temporal rep running the call; their real name is given below when known) and "Other" is everyone on the remote side of the call. Attribute decisions/commitments to the right party.
+
+    Also identify who was on the call and return it as "attendees": a list of the people who participated. Infer attendees from self-introductions ("my name is X", "this is X from Y", "X here"), people addressing each other by name, and the call context. Include the app user (use their real name given below; if unknown, use "You"). For other participants, use real names with "(Temporal)" or "(Customer)" appended where their side is clear, else just the name. If a remote participant is never named, you may include a generic "Other (Customer)" entry. NEVER invent names; only use names actually spoken or provided in the context.
 
     In addition to the summary, act as a performance coach for the user (the Temporal side). Provide:
       - "feedback": 2-4 sentences of honest, constructive feedback on how the user performed on THIS call and, specifically, what they could have done better. Be direct and actionable, not generic praise.
       - "score": an integer from 1 (poor) to 10 (excellent) rating how well the user accomplished their objectives. Judge against the user's role objectives and scoring criteria in the "Your role on this call" section below when provided; otherwise judge general sales effectiveness. Be fair but discerning -- reserve 9-10 for truly excellent calls. Use 0 only if there is not enough conversation to judge.
-    """
-
-    static let identitySystemPrompt = """
-    You attribute transcript lines to the person who spoke them for a Temporal sales call. Each line is tagged with an index, an audio SOURCE, and a timestamp:
-      * source "mic"    = the LOCAL microphone. This is ALWAYS a Temporal person (the rep running the call). Never attribute a mic line to the customer.
-      * source "output" = audio from the call's remote participants (the other side). This is usually the customer, but may ALSO include remote Temporal colleagues.
-
-    Your job: using self-introductions ("my name is X", "this is X from Y", "X here"), people addressing each other by name, and context, assign EVERY line a speaker label. For each line return:
-      - index: the line's index (unchanged)
-      - name:  the speaker's real first name if it can be determined, else null. NEVER invent a name; only use names actually spoken or given in the context. (The local "mic" speaker is the app user; you do not need a name for them.)
-      - org:   "temporal" if the speaker works at Temporal, "customer" if they are on the prospect's side, else "unknown".
-      - label: the final display label, chosen by this cascade:
-           1. A "mic" line is ALWAYS the app user -> label "You".
-           2. For an "output" line, if a name is known: "Name (Temporal)" or "Name (Customer)"; if the org is unknown, just "Name".
-           3. Else fall back to "Other" (an unidentified remote participant, who may be the customer OR another Temporal colleague).
-
-    Also return "roster": the unique set of speaker labels you identified (names preferred), for a UI attendee list. Do not include "You" in the roster.
-
-    Rules:
-      - mic lines are always the app user -> label exactly "You" (never a name, never "Temporal").
-      - Keep a given person's label STABLE across all their lines.
-      - Only emit names that genuinely appear; otherwise use the "Other" fallback.
     """
 
     static func withRole(_ base: String, _ roleGuidance: String?) -> String {
@@ -86,7 +67,8 @@ enum Prompts {
 
     static func buildAnalysisUserPrompt(
         title: String, transcript: String, callContext: String?,
-        currentSuggestions: [ZiggyObservation], maxSuggestions: Int
+        currentSuggestions: [ZiggyObservation], dismissedSuggestions: [ZiggyObservation],
+        maxSuggestions: Int
     ) -> String {
         var parts: [String] = ["Call title: \(title)"]
         if let ctx = callContext, !ctx.isEmpty {
@@ -102,33 +84,25 @@ enum Prompts {
         } else {
             parts.append("The board is currently empty.")
         }
+        if !dismissedSuggestions.isEmpty {
+            let lines = dismissedSuggestions.map { "- (\($0.kind)) \($0.title)" }.joined(separator: "\n")
+            parts.append("The user has DISMISSED these suggestions as not relevant. Do NOT propose them again, and do NOT propose anything essentially equivalent:\n" + lines)
+        }
         parts.append("Conversation transcript so far (speaker-labeled):\n" + transcript.trimmingCharacters(in: .whitespacesAndNewlines))
         parts.append("Return the FULL updated board (at most N suggestions, highest priority first) for what the Temporal side should do/say NEXT, as structured data.")
         return parts.joined(separator: "\n\n")
     }
 
-    static func buildIdentityUserPrompt(
-        title: String, transcript: String, callContext: String?, repName: String?
+    static func buildSummaryUserPrompt(
+        title: String, transcript: String, callContext: String?,
+        guidelines: String?, structure: String?, userName: String?
     ) -> String {
         var parts: [String] = ["Call title: \(title)"]
-        if let rep = repName, !rep.isEmpty {
-            parts.append("The Temporal rep on the microphone is named: \(rep)")
+        if let name = userName, !name.isEmpty {
+            parts.append("The app user (labeled \"You\" in the transcript) is the Temporal rep running the call. Their name is: \(name). Use this name for them in the attendees list.")
         }
         if let ctx = callContext, !ctx.isEmpty {
             parts.append("Call context (may name attendees and their companies):\n" + ctx.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        parts.append("Transcript lines, each as `[index] (source) [mm:ss] text`:\n" + transcript.trimmingCharacters(in: .whitespacesAndNewlines))
-        parts.append("Return an assignment for EVERY line index, plus the roster, as structured data. Follow the label cascade exactly.")
-        return parts.joined(separator: "\n\n")
-    }
-
-    static func buildSummaryUserPrompt(
-        title: String, transcript: String, callContext: String?,
-        guidelines: String?, structure: String?
-    ) -> String {
-        var parts: [String] = ["Call title: \(title)"]
-        if let ctx = callContext, !ctx.isEmpty {
-            parts.append("Call context:\n" + ctx.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         if let g = guidelines, !g.isEmpty {
             parts.append("Summary guidelines from the user (follow these):\n" + g.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -137,7 +111,7 @@ enum Prompts {
             parts.append("Desired summary structure (follow this):\n" + s.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         parts.append("Full call transcript (speaker-labeled):\n" + transcript.trimmingCharacters(in: .whitespacesAndNewlines))
-        parts.append("Produce: a concise summary, key points, action items, and clear next steps, plus honest coaching feedback and a 1-10 performance score for the user, judged against their role.")
+        parts.append("Produce: the list of attendees on the call, a concise summary, key points, action items, and clear next steps, plus honest coaching feedback and a 1-10 performance score for the user, judged against their role.")
         return parts.joined(separator: "\n\n")
     }
 }

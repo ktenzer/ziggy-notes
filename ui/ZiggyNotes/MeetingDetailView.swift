@@ -83,6 +83,20 @@ struct MeetingDetailView: View {
 
     private var summaryCard: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if !meeting.attendees.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.2.fill").foregroundStyle(Theme.purple)
+                        Text("Attendees").font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.textPrimary)
+                    }
+                    Text(meeting.attendees.joined(separator: ", "))
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textPrimary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if !meeting.summaryText.isEmpty {
                 Text(meeting.summaryText)
                     .font(.system(size: 14))
@@ -173,9 +187,14 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(sortedLines) { line in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(line.speaker.isEmpty ? "Speaker" : line.speaker)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Theme.purple)
+                        HStack(spacing: 6) {
+                            Text(line.speaker.isEmpty ? "Speaker" : line.speaker)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(Theme.purple)
+                            Text(line.timestamp)
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
                         Text(line.text)
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.textPrimary)

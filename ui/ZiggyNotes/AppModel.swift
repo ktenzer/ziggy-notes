@@ -164,6 +164,23 @@ final class AppModel {
         return record
     }
 
+    /// Dismiss a suggestion the user isn't concerned about: remove it locally for
+    /// instant feedback, then signal the workflow to suppress it (and equivalents)
+    /// for the rest of the meeting. Server state stays authoritative via polling.
+    func dismissSuggestion(_ meeting: MeetingRecord, _ suggestion: SuggestionRecord) async {
+        let sid = suggestion.suggestionId
+        meeting.suggestions.removeAll { $0 === suggestion }
+        try? modelContext?.save()
+        guard !sid.isEmpty else { return }
+        do {
+            try await client.dismissSuggestion(meetingId: meeting.meetingId, suggestionId: sid)
+        } catch {
+            if !ZiggyClient.isGone(error) {
+                banner = "Failed to dismiss suggestion: \(error)"
+            }
+        }
+    }
+
     func stopMeeting(_ meeting: MeetingRecord, abort: Bool = false) async {
         meeting.stopRequested = true
         meeting.state = .summarizing
@@ -267,7 +284,8 @@ final class AppModel {
                     index: row.index,
                     speaker: row.speaker,
                     text: row.text,
-                    startSeconds: row.startSeconds
+                    startSeconds: row.startSeconds,
+                    capturedAt: row.capturedAt
                 )
                 line.meeting = meeting
                 context.insert(line)
@@ -316,6 +334,7 @@ final class AppModel {
 
         if let summary = updates.summary {
             meeting.summaryText = summary.summary
+            meeting.attendees = summary.attendees
             meeting.keyPoints = summary.keyPoints
             meeting.actionItems = summary.actionItems
             meeting.nextSteps = summary.nextSteps

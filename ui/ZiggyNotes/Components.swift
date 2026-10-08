@@ -69,6 +69,8 @@ struct SuggestionCardView: View {
     let detail: String
     let priority: String
     let kind: String
+    /// When provided, shows an "×" to dismiss this suggestion for the meeting.
+    var onDismiss: (() -> Void)? = nil
 
     var body: some View {
         let color = Theme.priorityColor(priority)
@@ -91,6 +93,15 @@ struct SuggestionCardView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(color, in: Capsule())
+                    if let onDismiss {
+                        Button(action: onDismiss) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dismiss — don't suggest this again this meeting")
+                    }
                 }
                 if !detail.isEmpty {
                     Text(detail)

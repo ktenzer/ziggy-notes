@@ -96,6 +96,17 @@ actor ZiggyClient {
         try await handle.signal(signalName: abort ? "abort" : "stop_recording")
     }
 
+    /// Signals the workflow to dismiss a suggestion so it (and equivalents) are
+    /// suppressed for the rest of the meeting.
+    func dismissSuggestion(meetingId: String, suggestionId: String) async throws {
+        let client = try requireClient()
+        let handle = client.untypedWorkflowHandle(id: workflowId(for: meetingId))
+        try await handle.signal(
+            signalName: "dismiss_suggestion",
+            input: DismissSuggestionInput(suggestionId: suggestionId)
+        )
+    }
+
     /// Runs the incremental `get_updates` query. Returns `nil` if the workflow does
     /// not exist (e.g. never started or purged), allowing callers to treat it as gone.
     func getUpdates(meetingId: String, sinceChunk: Int, sinceSuggestion: Int) async throws -> MeetingUpdatesDTO? {

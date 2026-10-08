@@ -66,6 +66,7 @@ struct UpdatesCursor: Codable, Sendable {
 /// Mirrors `ziggy.models.MeetingSummary`.
 struct MeetingSummaryDTO: Codable, Sendable, Hashable {
     var summary: String
+    var attendees: [String]
     var keyPoints: [String]
     var actionItems: [String]
     var nextSteps: [String]
@@ -73,7 +74,7 @@ struct MeetingSummaryDTO: Codable, Sendable, Hashable {
     var score: Int
 
     enum CodingKeys: String, CodingKey {
-        case summary
+        case summary, attendees
         case keyPoints = "key_points"
         case actionItems = "action_items"
         case nextSteps = "next_steps"
@@ -81,10 +82,11 @@ struct MeetingSummaryDTO: Codable, Sendable, Hashable {
         case score
     }
 
-    // Tolerate older payloads that predate feedback/score.
+    // Tolerate older payloads that predate attendees/feedback/score.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        attendees = try c.decodeIfPresent([String].self, forKey: .attendees) ?? []
         keyPoints = try c.decodeIfPresent([String].self, forKey: .keyPoints) ?? []
         actionItems = try c.decodeIfPresent([String].self, forKey: .actionItems) ?? []
         nextSteps = try c.decodeIfPresent([String].self, forKey: .nextSteps) ?? []
@@ -100,6 +102,7 @@ struct TranscriptRowDTO: Codable, Sendable, Identifiable, Hashable {
     var text: String
     var startSeconds: Double
     var endSeconds: Double
+    var capturedAt: Double
 
     var id: Int { index }
 
@@ -107,6 +110,18 @@ struct TranscriptRowDTO: Codable, Sendable, Identifiable, Hashable {
         case index, speaker, text
         case startSeconds = "start_seconds"
         case endSeconds = "end_seconds"
+        case capturedAt = "captured_at"
+    }
+
+    // Tolerate rows from before captured_at existed.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        index = try c.decodeIfPresent(Int.self, forKey: .index) ?? 0
+        speaker = try c.decodeIfPresent(String.self, forKey: .speaker) ?? ""
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        startSeconds = try c.decodeIfPresent(Double.self, forKey: .startSeconds) ?? 0
+        endSeconds = try c.decodeIfPresent(Double.self, forKey: .endSeconds) ?? 0
+        capturedAt = try c.decodeIfPresent(Double.self, forKey: .capturedAt) ?? 0
     }
 }
 

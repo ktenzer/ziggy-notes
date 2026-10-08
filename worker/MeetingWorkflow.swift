@@ -9,11 +9,11 @@ import Temporal
 ///   2. Receives transcribed chunks via the `add_transcript_chunk` signal and
 ///      appends them to its transcript buffer.
 ///   3. Every `analyzeEveryNChunks` new chunks (after a warmup), runs
-///      `identify_speakers` then `analyze_conversation`, maintaining a ranked,
-///      capped suggestion board.
+///      `analyze_conversation`, maintaining a ranked, capped suggestion board.
 ///   4. Ends on a `stop_recording` signal or when capture stops itself after the
 ///      silence timeout.
-///   5. Summarizes, writes the (stubbed) Google Doc, and returns a MeetingResult.
+///   5. Summarizes (which also identifies the call attendees), writes the
+///      (stubbed) Google Doc, and returns a MeetingResult.
 @Workflow(name: "MeetingWorkflow")
 struct MeetingWorkflow {
     // MARK: - State
@@ -24,6 +24,9 @@ struct MeetingWorkflow {
     var lastAnalyzedCount = 0
     var activeSuggestions: [ZiggyObservation] = []
     var nextSuggestionSeq = 0
+    // Suggestions the user dismissed this meeting; fed back to analysis so the
+    // LLM does not re-propose them (or equivalents). Not persisted across meetings.
+    var dismissed: [ZiggyObservation] = []
     var labels: [Int: String] = [:]
     var roster: [String] = []
     var summary: MeetingSummary?
@@ -38,8 +41,8 @@ struct MeetingWorkflow {
 
     // MARK: - Signals
 
-    /// Append a transcribed chunk (from the capture activity). Seeds the resolved
-    /// label with the source-based default; `identify_speakers` may upgrade it.
+    /// Append a transcribed chunk (from the capture activity). Resolves the label
+    /// from the source-based default (You/Other); labels are not upgraded live.
     ///
     /// The workflow — not the capture activity — owns the chunk index: it assigns
     /// the next monotonic index on arrival. This is essential because the capture
@@ -69,6 +72,18 @@ struct MeetingWorkflow {
     mutating func abort(input: Void) {
         stopRequested = true
         abortRequested = true
+    }
+
+    /// Dismiss a suggestion the user isn't concerned about. Removes it from the
+    /// live board immediately and remembers its content so subsequent analysis
+    /// passes don't re-propose it (or an equivalent) for the rest of the meeting.
+    @WorkflowSignal(name: "dismiss_suggestion")
+    mutating func dismissSuggestion(input: DismissSuggestionInput) {
+        guard let idx = activeSuggestions.firstIndex(where: { $0.id == input.suggestionId }) else { return }
+        let obs = activeSuggestions.remove(at: idx)
+        if !dismissed.contains(where: { Self.sameSuggestion($0, obs) }) {
+            dismissed.append(obs)
+        }
     }
 
     // MARK: - Queries
@@ -106,7 +121,8 @@ struct MeetingWorkflow {
         let sinceChunk = input.sinceChunk
         let rows = chunks.filter { $0.index >= sinceChunk }.map { c in
             TranscriptRow(index: c.index, speaker: labelFor(c), text: c.text,
-                          startSeconds: c.startSeconds, endSeconds: c.endSeconds)
+                          startSeconds: c.startSeconds, endSeconds: c.endSeconds,
+                          capturedAt: c.capturedAt)
         }
         let suggRows = activeSuggestions.map { o in
             SuggestionRow(id: o.id, atChunk: 0, kind: o.kind, title: o.title,
@@ -175,14 +191,9 @@ struct MeetingWorkflow {
             await runAnalysis(context: context, input: input, cfg: cfg)
         }
 
-        // Final speaker attribution so the summary/transcript use real names.
-        await runIdentify(
-            context: context, input: input,
-            retryPolicy: Self.summaryRetry, startToClose: Self.summaryStartToClose,
-            scheduleToClose: Self.summaryScheduleToClose, watchAbort: true
-        )
-
         // --- summarize --------------------------------------------------------
+        // Attendee identification happens inside this one call (no separate
+        // identify_speakers pass); the live transcript stays You/Other.
         state = "summarizing"
         let transcript = renderTranscript()
         let summaryOpts = ActivityOptions(
@@ -192,7 +203,8 @@ struct MeetingWorkflow {
         )
         let summaryInput = SummaryInput(
             title: input.title, transcript: transcript, callContext: input.callContext,
-            guidelines: input.summaryGuidelines, structure: input.summaryStructure
+            guidelines: input.summaryGuidelines, structure: input.summaryStructure,
+            repName: input.repName
         )
         let summaryResult = await finishOrAbort(context: context) {
             try await context.executeActivity(
@@ -206,6 +218,8 @@ struct MeetingWorkflow {
         case .failed: finalSummary = MeetingSummary(summary: "Summary unavailable (LLM error); full transcript is preserved.")
         }
         summary = finalSummary
+        // The attendee list identified during summarization feeds the roster chip.
+        if !finalSummary.attendees.isEmpty { roster = finalSummary.attendees }
 
         // --- Google Doc (stubbed) --------------------------------------------
         var googleDoc: GoogleDocRef
@@ -265,11 +279,6 @@ struct MeetingWorkflow {
                 lastAnalyzedCount = chunks.count
                 continue
             }
-            await runIdentify(
-                context: context, input: input,
-                retryPolicy: Self.llmRetry, startToClose: .seconds(60),
-                scheduleToClose: nil, watchAbort: false
-            )
             await runAnalysis(context: context, input: input, cfg: cfg)
         }
     }
@@ -288,7 +297,8 @@ struct MeetingWorkflow {
         )
         let analysisInput = AnalysisInput(
             title: input.title, transcript: transcript, callContext: input.callContext,
-            currentSuggestions: activeSuggestions, maxSuggestions: cfg.maxActiveSuggestions
+            currentSuggestions: activeSuggestions, dismissedSuggestions: dismissed,
+            maxSuggestions: cfg.maxActiveSuggestions
         )
         let outcome = await raceAgainstStop(context: context) {
             try await context.executeActivity(
@@ -301,34 +311,6 @@ struct MeetingWorkflow {
         state = "recording"
     }
 
-    private mutating func runIdentify(
-        context: WorkflowContext<Self>, input: MeetingInput,
-        retryPolicy: RetryPolicy, startToClose: Duration,
-        scheduleToClose: Duration?, watchAbort: Bool
-    ) async {
-        let transcript = renderForIdentity()
-        if transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
-        let opts = ActivityOptions(
-            startToCloseTimeout: startToClose, scheduleToCloseTimeout: scheduleToClose,
-            cancellationType: .tryCancel, retryPolicy: retryPolicy
-        )
-        let identityInput = IdentityInput(
-            title: input.title, transcript: transcript,
-            callContext: input.callContext, repName: input.repName
-        )
-        let run: @Sendable () async throws -> IdentityResult = {
-            try await context.executeActivity(
-                ZiggyActivities.Activities.IdentifySpeakers.self, options: opts, input: identityInput
-            )
-        }
-        let outcome = watchAbort
-            ? await finishOrAbort(context: context, run)
-            : await raceAgainstStop(context: context, run)
-        if case .value(let result) = outcome {
-            applyIdentity(result)
-        }
-    }
-
     // MARK: - Suggestion board
 
     private mutating func newSid() -> String {
@@ -337,10 +319,22 @@ struct MeetingWorkflow {
         return sid
     }
 
+    /// Two suggestions are "the same" for dismissal purposes when they share a
+    /// kind and (normalized) title. Best-effort: catches verbatim re-proposals;
+    /// the prompt instruction handles reworded equivalents.
+    private static func sameSuggestion(_ a: ZiggyObservation, _ b: ZiggyObservation) -> Bool {
+        a.kind == b.kind
+            && a.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                == b.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private mutating func applySuggestions(_ desired: [ZiggyObservation], cfg: WorkerConfig) {
         let existingIds = Set(activeSuggestions.map(\.id).filter { !$0.isEmpty })
         var merged: [ZiggyObservation] = []
         for obs in desired {
+            // Safety net: never resurrect a user-dismissed suggestion even if the
+            // LLM re-proposes it despite the prompt instruction.
+            if dismissed.contains(where: { Self.sameSuggestion($0, obs) }) { continue }
             let oid = (!obs.id.isEmpty && existingIds.contains(obs.id)) ? obs.id : newSid()
             merged.append(ZiggyObservation(id: oid, kind: obs.kind, title: obs.title,
                                       detail: obs.detail, priority: obs.priority))
@@ -353,16 +347,6 @@ struct MeetingWorkflow {
             return ra != rb ? ra < rb : a.offset < b.offset
         }
         activeSuggestions = ranked.prefix(cfg.maxActiveSuggestions).map(\.element)
-    }
-
-    private mutating func applyIdentity(_ result: IdentityResult) {
-        let valid = Set(chunks.map(\.index))
-        for a in result.assignments where valid.contains(a.index) && !a.label.isEmpty {
-            labels[a.index] = a.label
-        }
-        if !result.roster.isEmpty && result.roster != roster {
-            roster = result.roster
-        }
     }
 
     // MARK: - Transcript rendering
@@ -380,13 +364,6 @@ struct MeetingWorkflow {
         chunks.map { c in
             let ts = Int(c.startSeconds)
             return String(format: "[%02d:%02d] %@: %@", ts / 60, ts % 60, labelFor(c), c.text)
-        }.joined(separator: "\n")
-    }
-
-    private func renderForIdentity() -> String {
-        chunks.map { c in
-            let ts = Int(c.startSeconds)
-            return String(format: "[%d] (%@) [%02d:%02d] %@", c.index, c.source, ts / 60, ts % 60, c.text)
         }.joined(separator: "\n")
     }
 
