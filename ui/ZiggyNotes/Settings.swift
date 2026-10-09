@@ -72,7 +72,23 @@ final class Settings {
 
     private let d = UserDefaults.standard
 
-    init() { load() }
+    init() {
+        registerBundledDefaults()
+        load()
+    }
+
+    /// Seeds settings from a bundled `ZiggyDefaults.plist` (if present) via the
+    /// UserDefaults *registration* domain. This lets a build ship pre-configured
+    /// (e.g. Temporal Cloud + an API key for testers) WITHOUT hardcoding anything
+    /// in source — the values live in a config file, not in code. Anything the
+    /// user saves in Settings always wins (the persistent domain is searched
+    /// before the registration domain). Absent file => no-op (manual setup).
+    private func registerBundledDefaults() {
+        guard let url = Bundle.main.url(forResource: "ZiggyDefaults", withExtension: "plist"),
+              let dict = NSDictionary(contentsOf: url) as? [String: Any],
+              !dict.isEmpty else { return }
+        d.register(defaults: dict)
+    }
 
     // MARK: - Validation
 

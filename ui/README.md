@@ -1,6 +1,6 @@
-# Ziggy Notes — macOS app
+# Ziggy Listens — macOS app
 
-A native SwiftUI client for Ziggy Notes. It connects to Temporal using the
+A native SwiftUI client for Ziggy Listens. It connects to Temporal using the
 [Apple Swift Temporal SDK](https://github.com/apple/swift-temporal-sdk), runs a
 **built-in Swift Temporal worker in-process**, starts/stops meeting workflows,
 and polls the workflow for live transcript + active-listening guidance.

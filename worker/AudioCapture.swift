@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import ScreenCaptureKit
 import CoreMedia
+import CoreGraphics
 import Logging
 
 /// Captures BOTH the local microphone (the Temporal rep) and the system audio
@@ -72,6 +73,17 @@ final class AudioCapture: NSObject, @unchecked Sendable, SCStreamOutput, SCStrea
     }
 
     private func startSystemAudio() async {
+        // Only touch ScreenCaptureKit if permission is ALREADY granted. Calling
+        // SCShareableContent without permission pops the system "would like to
+        // record" modal — and would do so on EVERY note. The one-time request is
+        // handled once at app startup (WorkerManager.requestScreenCaptureAccess);
+        // here we stay silent until the grant is actually in effect. (For Screen
+        // Recording the grant only takes effect after the app is reopened, so a
+        // just-granted permission won't register until the next launch.)
+        guard CGPreflightScreenCaptureAccess() else {
+            logger.warning("Screen Recording not granted yet; skipping system-audio (customer) capture. Grant it in System Settings > Privacy & Security > Screen & System Audio Recording, then reopen the app. (Mic capture is unaffected.)")
+            return
+        }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             guard let display = content.displays.first else {

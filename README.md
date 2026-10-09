@@ -1,4 +1,4 @@
-# Ziggy Notes
+# Ziggy Listens
 
 **An active-listening meeting note-taker for Temporal sales calls, built on Temporal.**
 
@@ -104,13 +104,22 @@ Cloud credentials) and an OpenAI or Anthropic API key (set in the app's Settings
 
 ```bash
 cd ziggy-notes
-./build_dmg.sh            # builds the app + in-process worker, packages a DMG
-# or ./build_dmg.sh Release
+./build_dmg.sh            # Release build (for sharing), packages a DMG
+# or ./build_dmg.sh Debug
 ```
 
 The script runs `xcodegen generate` and `xcodebuild` for the project under `ui/`,
-then writes a drag-to-install `~/Documents/ZiggyNotes.dmg`. Open it and drag
-**Ziggy Notes.app** to Applications.
+ad-hoc signs the app, then writes a drag-to-install `~/Documents/ZiggyListens.dmg`
+containing **Ziggy Listens.app**, an Applications symlink, and a `READ ME FIRST.txt`.
+Open it and drag the app to Applications.
+
+**Sharing with testers:** the DMG is ad-hoc signed (so it launches on any Apple
+Silicon Mac) but **not notarized** — Apple notarization needs the paid Apple
+Developer Program. On first launch testers get a Gatekeeper prompt; they clear it
+once via **System Settings → Privacy & Security → Open Anyway** (the right-click →
+Open shortcut no longer works on macOS Sequoia). The bundled `READ ME FIRST.txt`
+spells out that step plus the Microphone / Screen-Recording grants and Settings
+(role, API key, Temporal endpoint).
 
 To develop in Xcode instead:
 

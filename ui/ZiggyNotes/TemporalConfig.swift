@@ -175,5 +175,15 @@ func workflowId(for meetingId: String) -> String {
     "ziggy-meeting-\(meetingId)"
 }
 
-/// Registered workflow type name on the Python worker.
+/// Registered meeting workflow type name.
 let meetingWorkflowName = "MeetingWorkflow"
+
+/// Ask-anything workflow IDs: one per question, grouped by meeting note so it's
+/// clear in Temporal which note each exchange belongs to
+/// (e.g. `ziggy-ask-<meetingId>-1`, `-2`, …).
+func askWorkflowId(for meetingId: String, seq: Int) -> String {
+    "ziggy-ask-\(meetingId)-\(seq)"
+}
+
+/// Registered ask workflow type name.
+let askMeetingWorkflowName = "AskMeetingWorkflow"

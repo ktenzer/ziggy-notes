@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE for ZiggyDefaults.plist.
+
+  Copy this file to "ZiggyDefaults.plist" (same folder) and fill in real values,
+  then run `xcodegen generate` + `./build_dmg.sh`. The real ZiggyDefaults.plist
+  is gitignored so credentials stay out of git but are bundled into your build.
+
+  These keys seed the app's Settings (via the UserDefaults registration domain);
+  anything the user changes in Settings overrides them. Keys MUST match the
+  UserDefaults keys used in Settings.swift. Omit any key you don't want preset.
+-->
+<plist version="1.0">
+<dict>
+	<key>userRole</key>
+	<string>ae</string>
+
+	<key>llmProvider</key>
+	<string>anthropic</string>
+	<key>anthropicKey</key>
+	<string>REPLACE_WITH_ANTHROPIC_API_KEY</string>
+	<!-- <key>openAIKey</key><string>REPLACE_WITH_OPENAI_API_KEY</string> -->
+
+	<key>useTemporalCloud</key>
+	<true/>
+	<key>temporalAddress</key>
+	<string>your-namespace.acct.tmprl.cloud:7233</string>
+	<key>temporalNamespace</key>
+	<string>your-namespace.acct</string>
+	<key>temporalApiKey</key>
+	<string>REPLACE_WITH_TEMPORAL_CLOUD_API_KEY</string>
+</dict>
+</plist>

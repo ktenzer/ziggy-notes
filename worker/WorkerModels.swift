@@ -378,3 +378,73 @@ struct MeetingUpdates: Codable, Sendable {
         case transcript, suggestions, labels, roster, summary
     }
 }
+
+// MARK: - "Ask anything" models
+
+/// Workflow input for one ask-anything exchange. Metadata only; the question and
+/// grounding context arrive via the `ask` signal (signal-with-start).
+struct AskInput: Codable, Sendable {
+    var meetingId: String
+    var title: String
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+        case title
+    }
+}
+
+/// Payload delivered via the `ask` signal: the user's question plus a snapshot of
+/// the transcript and current guidance so the answer is grounded in the call.
+struct AskRequest: Codable, Sendable {
+    var question: String
+    var transcript: String
+    var guidance: String
+
+    enum CodingKeys: String, CodingKey { case question, transcript, guidance }
+}
+
+/// Final answer returned by the ask workflow.
+struct AskResult: Codable, Sendable {
+    var answer: String
+
+    init(answer: String = "") { self.answer = answer }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        answer = try c.decodeIfPresent(String.self, forKey: .answer) ?? ""
+    }
+    enum CodingKeys: String, CodingKey { case answer }
+}
+
+/// Input to the `answer_question` activity (one step of the ask agent loop).
+struct AnswerInput: Codable, Sendable {
+    var title: String
+    var question: String
+    var transcript: String
+    var guidance: String
+    var priorNotes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title, question, transcript, guidance
+        case priorNotes = "prior_notes"
+    }
+}
+
+/// Output of the `answer_question` activity. `done`/`notes` let the workflow run a
+/// bounded agent loop: continue (false) with the model's scratch notes until it is
+/// satisfied (true) or the step cap is hit.
+struct AnswerResult: Codable, Sendable {
+    var answer: String
+    var done: Bool
+    var notes: String
+
+    init(answer: String = "", done: Bool = true, notes: String = "") {
+        self.answer = answer; self.done = done; self.notes = notes
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        answer = try c.decodeIfPresent(String.self, forKey: .answer) ?? ""
+        done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? true
+        notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
+    }
+    enum CodingKeys: String, CodingKey { case answer, done, notes }
+}

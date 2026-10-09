@@ -30,6 +30,10 @@ targets:
     platform: macOS
     sources:
       - path: ZiggyNotes
+        excludes:
+          # Committed template only — the real (gitignored) ZiggyDefaults.plist
+          # is what ships, seeding Settings on a fresh install.
+          - "ZiggyDefaults.example.plist"
       # The in-process Swift worker compiles into the app target so it can reuse
       # the app's DTOs and run hands-off capture.
       - path: ../worker
@@ -43,14 +47,14 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.temporal.ziggynotes
-        PRODUCT_NAME: "Ziggy Notes"
+        PRODUCT_NAME: "Ziggy Listens"
         GENERATE_INFOPLIST_FILE: "YES"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_ENTITLEMENTS: ZiggyNotes/ZiggyNotes.entitlements
         CODE_SIGN_STYLE: Automatic
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Ziggy Notes records meeting audio (mic + system output) to transcribe and summarize your calls."
-        INFOPLIST_KEY_NSScreenCaptureUsageDescription: "Ziggy Notes captures your meeting's system audio (the people you're talking to) so it can transcribe and summarize the call."
-        INFOPLIST_KEY_NSHumanReadableCopyright: "Ziggy Notes"
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Ziggy Listens records meeting audio (mic + system output) to transcribe and summarize your calls."
+        INFOPLIST_KEY_NSScreenCaptureUsageDescription: "Ziggy Listens captures your meeting's system audio (the people you're talking to) so it can transcribe and summarize the call."
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Ziggy Listens"
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.productivity"
         INFOPLIST_KEY_LSUIElement: "NO"
     dependencies:

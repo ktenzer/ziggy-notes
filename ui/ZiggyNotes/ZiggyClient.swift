@@ -107,6 +107,26 @@ actor ZiggyClient {
         )
     }
 
+    /// Starts (signal-with-start) an ask-anything workflow for a single question and
+    /// waits for its answer. Each question is its own workflow, id'd per note so the
+    /// exchanges are easy to find in Temporal.
+    func askQuestion(
+        meetingId: String, title: String, seq: Int,
+        question: String, transcript: String, guidance: String
+    ) async throws -> String {
+        let client = try requireClient()
+        let askId = askWorkflowId(for: meetingId, seq: seq)
+        let handle = try await client.signalWithStartWorkflow(
+            name: askMeetingWorkflowName,
+            input: AskInput(meetingId: meetingId, title: title),
+            options: WorkflowOptions(id: askId, taskQueue: config.taskQueue),
+            signalName: "ask",
+            signalInput: AskRequest(question: question, transcript: transcript, guidance: guidance)
+        )
+        let result: AskResult = try await handle.result(resultTypes: AskResult.self)
+        return result.answer
+    }
+
     /// Runs the incremental `get_updates` query. Returns `nil` if the workflow does
     /// not exist (e.g. never started or purged), allowing callers to treat it as gone.
     func getUpdates(meetingId: String, sinceChunk: Int, sinceSuggestion: Int) async throws -> MeetingUpdatesDTO? {

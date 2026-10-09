@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 #
-# Build Ziggy Notes (the SwiftUI app AND the in-process Swift worker, which
+# Build Ziggy Listens (the SwiftUI app AND the in-process Swift worker, which
 # compiles into the same target) and package a drag-to-install DMG (with the app
 # icon as the volume icon) into ~/Documents.
 #
 # Run from the ziggy-notes/ root. The Xcode project lives under ui/.
 #
+# The app is ad-hoc signed so it launches on other Apple Silicon Macs (an
+# unsigned bundle is rejected as "damaged"). It is NOT notarized, so testers
+# still get a one-time Gatekeeper prompt — the bundled "READ ME FIRST.txt"
+# explains how to get past it.
+#
 # Usage:
-#   ./build_dmg.sh            # Debug build
-#   ./build_dmg.sh Release    # Release build
+#   ./build_dmg.sh            # Release build (for sharing)
+#   ./build_dmg.sh Debug      # Debug build
 #
 set -euo pipefail
 
@@ -16,15 +21,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UI_DIR="$SCRIPT_DIR/ui"
 cd "$UI_DIR"
 
-CONFIG="${1:-Debug}"
-APP_NAME="Ziggy Notes"
+CONFIG="${1:-Release}"
+# Display name of the built product (PRODUCT_NAME in project.yml). The Xcode
+# target/scheme/project are still "ZiggyNotes" (internal identifiers).
+APP_NAME="Ziggy Listens"
 SCHEME="ZiggyNotes"
 PROJECT="ZiggyNotes.xcodeproj"
 BUILD_DIR="$UI_DIR/.build"
 PRODUCTS_DIR="$BUILD_DIR/Build/Products/$CONFIG"
 APP_PATH="$PRODUCTS_DIR/$APP_NAME.app"
-DMG_OUT="$HOME/Documents/ZiggyNotes.dmg"
-VOL_NAME="Ziggy Notes"
+DMG_OUT="$HOME/Documents/ZiggyListens.dmg"
+VOL_NAME="Ziggy Listens"
 
 echo "==> Generating Xcode project"
 if command -v xcodegen >/dev/null 2>&1; then
@@ -49,6 +56,41 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 echo "    built: $APP_PATH"
+
+# ----------------------------------------------------------------------------
+# Sign the whole bundle (inside-out via --deep). Two reasons:
+#   1. Apple Silicon refuses to launch binaries with no signature at all —
+#      without this, testers get "Ziggy Listens is damaged and can't be opened".
+#   2. macOS ties TCC grants (Screen Recording / Microphone) to the signing
+#      identity. A STABLE identity means the permission is granted ONCE and
+#      persists across rebuilds; ad-hoc (`-`) changes every build and re-prompts.
+#
+# We prefer the stable self-signed identity from scripts/setup-signing.sh and
+# fall back to ad-hoc if it isn't installed. (Neither is notarized, so first
+# launch still needs the one-time Gatekeeper "Open Anyway".)
+# ----------------------------------------------------------------------------
+echo "==> Signing"
+ENTITLEMENTS="$UI_DIR/ZiggyNotes/ZiggyNotes.entitlements"
+SIGN_IDENTITY="${SIGN_IDENTITY:-Ziggy Listens Self-Signed}"
+SIGN_KEYCHAIN="${SIGN_KEYCHAIN:-$HOME/Library/Keychains/ziggy-signing.keychain-db}"
+SIGN_KEYCHAIN_PW="${SIGN_KEYCHAIN_PW:-ziggy-signing}"
+
+if [[ -f "$SIGN_KEYCHAIN" ]] && security find-identity -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+  echo "    using stable identity: $SIGN_IDENTITY"
+  security unlock-keychain -p "$SIGN_KEYCHAIN_PW" "$SIGN_KEYCHAIN" 2>/dev/null || true
+  codesign --force --deep --sign "$SIGN_IDENTITY" --keychain "$SIGN_KEYCHAIN" \
+    --entitlements "$ENTITLEMENTS" "$APP_PATH"
+else
+  echo "    stable identity not found — using ad-hoc (Screen Recording permission"
+  echo "    will reset on each rebuild). Run ./scripts/setup-signing.sh once to fix."
+  codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP_PATH"
+fi
+
+if codesign --verify --deep --strict "$APP_PATH" >/dev/null 2>&1; then
+  echo "    signature OK"
+else
+  echo "    WARN: codesign verify reported issues (app may still run)"
+fi
 
 # ----------------------------------------------------------------------------
 # Build an .icns for the DMG volume icon from the AppIcon asset PNGs.
@@ -83,6 +125,48 @@ STAGE="$WORK/stage"
 mkdir -p "$STAGE"
 cp -R "$APP_PATH" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
+
+# Install + first-run guide for testers (this is a test build, not notarized).
+cat > "$STAGE/READ ME FIRST.txt" <<'EOF'
+Ziggy Listens — install guide (test build)
+==========================================
+
+1. INSTALL
+   Drag "Ziggy Listens" onto the Applications folder in this window.
+
+2. FIRST LAUNCH (get past the Gatekeeper prompt)
+   This is a test build, so it is NOT signed with a paid Apple Developer
+   certificate. The first time you open it, macOS will say it "cannot verify
+   the developer". This is expected. To allow it:
+
+     • Open  System Settings > Privacy & Security
+     • Scroll down to the Security section
+     • Click "Open Anyway" next to Ziggy Listens, then confirm with Touch ID /
+       your password.
+
+   On macOS Sequoia the old right-click > Open shortcut no longer works — you
+   must use Privacy & Security > Open Anyway.
+
+   If instead macOS says the app is "damaged", open Terminal and run:
+
+       xattr -dr com.apple.quarantine "/Applications/Ziggy Listens.app"
+
+   then open the app again.
+
+3. GRANT PERMISSIONS (asked on first run)
+     • Microphone — so Ziggy can hear you.
+     • Screen & System Audio Recording — so Ziggy can hear the other
+       participants. After enabling this in Privacy & Security, relaunch the app.
+
+4. CONFIGURE (Settings / Cmd-,)
+     • Your Role.
+     • AI Provider + API key (Anthropic or OpenAI — required).
+     • Temporal: leave on the local dev server (localhost:7233) with a Temporal
+       dev server running, or switch to Temporal Cloud and fill in address,
+       namespace, and API key.
+
+Then start a meeting and record. Enjoy!
+EOF
 
 # ----------------------------------------------------------------------------
 # Create a read-write DMG, set the volume icon, then convert to compressed.

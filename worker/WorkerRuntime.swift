@@ -47,7 +47,7 @@ actor WorkerRuntime {
             transportSecurity: temporal.useTLS ? .tls : .plaintext,
             activityContainers: activities,
             activities: [],
-            workflows: [MeetingWorkflow.self],
+            workflows: [MeetingWorkflow.self, AskMeetingWorkflow.self],
             logger: logger
         )
 

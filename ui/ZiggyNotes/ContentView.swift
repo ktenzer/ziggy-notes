@@ -116,7 +116,9 @@ struct ContentView: View {
 
     private var workerStatusColor: Color {
         switch app.worker.status {
-        case .running: return Theme.lowPriority
+        // Running is neutral grey so the Worker Logs icon matches the other
+        // toolbar icons; only transient/error states get a color cue.
+        case .running: return Theme.textSecondary
         case .starting: return Theme.mediumPriority
         case .failed: return Theme.highPriority
         case .idle, .stopped: return Theme.textSecondary
@@ -169,7 +171,7 @@ struct ContentView: View {
                 .disabled(liveExists)
             }
         }
-        .navigationTitle("Ziggy Notes")
+        .navigationTitle("Ziggy Listens")
     }
 
     // MARK: - Not-ready status bar

@@ -10,6 +10,7 @@ struct ActiveMeetingView: View {
 
     @State private var askText: String = ""
     @State private var isStopping = false
+    @State private var sending = false
 
     private var sortedLines: [TranscriptLineRecord] {
         meeting.lines.sorted { $0.index < $1.index }
@@ -33,10 +34,74 @@ struct ActiveMeetingView: View {
                 suggestionsPane
                     .frame(width: 320)
             }
+            askSection
             Divider().overlay(Theme.hairline)
             bottomBar
         }
         .background(Theme.background)
+    }
+
+    // MARK: - Ask anything
+
+    private var askThread: [AppModel.AskExchange] { app.askThreads[meeting.meetingId] ?? [] }
+    private var askPending: Bool { app.askPending[meeting.meetingId] == true }
+
+    @ViewBuilder
+    private var askSection: some View {
+        if !askThread.isEmpty {
+            Divider().overlay(Theme.hairline)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(askThread) { ex in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "person.crop.circle.fill")
+                                        .foregroundStyle(Theme.purple)
+                                    Text(ex.question)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(Theme.textPrimary)
+                                        .textSelection(.enabled)
+                                }
+                                if ex.pending {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Text("Ziggy is thinking…")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+                                } else {
+                                    HStack(alignment: .top, spacing: 6) {
+                                        Image(systemName: "sparkles").foregroundStyle(Theme.purple)
+                                        MarkdownText(text: ex.answer)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(ex.id)
+                        }
+                    }
+                    .padding(14)
+                }
+                .frame(maxHeight: 190)
+                .background(Theme.background.opacity(0.6))
+                .onChange(of: askThread.count) {
+                    if let last = askThread.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                }
+            }
+        }
+    }
+
+    private func submitAsk() {
+        let q = askText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !askPending, !sending else { return }
+        askText = ""
+        sending = true   // lock the input immediately, before the workflow registers
+        Task {
+            await app.ask(meeting, question: q)
+            sending = false
+        }
     }
 
     // MARK: - Header
@@ -172,21 +237,27 @@ struct ActiveMeetingView: View {
 
             HStack(spacing: 8) {
                 Image(systemName: "sparkle.magnifyingglass").foregroundStyle(Theme.textSecondary)
-                TextField("Ask anything about this meeting… (coming soon)", text: $askText)
+                TextField("Ask anything about this meeting…", text: $askText)
                     .textFieldStyle(.plain)
-                    .disabled(true)
+                    .disabled(askPending || sending)
+                    .onSubmit { submitAsk() }
             }
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline, lineWidth: 1))
 
             Button {
+                submitAsk()
             } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.title2)
+                if askPending || sending {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                }
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Theme.textSecondary)
-            .disabled(true)
+            .foregroundStyle(askText.trimmingCharacters(in: .whitespaces).isEmpty ? Theme.textSecondary : Theme.purple)
+            .disabled(askPending || sending || askText.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)

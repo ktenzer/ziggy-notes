@@ -118,6 +118,81 @@ struct SuggestionCardView: View {
     }
 }
 
+/// Renders a lightweight subset of Markdown for LLM answers: inline **bold** /
+/// *italic* / `code`, "-"/"*" bullet lists, and "1."/"1)" numbered lists with
+/// indentation. Avoids pulling in a full Markdown engine while still showing
+/// formatting instead of raw asterisks.
+struct MarkdownText: View {
+    let text: String
+    var font: Font = .system(size: 13)
+    var color: Color = Theme.textPrimary
+
+    private enum Block: Hashable {
+        case paragraph(String)
+        case bullet(String)
+        case numbered(String, String)
+        case spacer
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                row(for: block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var blocks: [Block] {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { raw in
+            let line = String(raw).trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { return .spacer }
+            if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                return .bullet(String(line.dropFirst(2)))
+            }
+            if let num = numbered(line) { return .numbered(num.0, num.1) }
+            return .paragraph(line)
+        }
+    }
+
+    private func numbered(_ line: String) -> (String, String)? {
+        guard let r = line.range(of: #"^\d+[\.\)]\s+"#, options: .regularExpression) else { return nil }
+        return (String(line[r]).trimmingCharacters(in: .whitespaces), String(line[r.upperBound...]))
+    }
+
+    @ViewBuilder
+    private func row(for block: Block) -> some View {
+        switch block {
+        case .spacer:
+            Spacer().frame(height: 2)
+        case .paragraph(let s):
+            Text(inline(s)).font(font).foregroundStyle(color)
+                .fixedSize(horizontal: false, vertical: true)
+        case .bullet(let s):
+            HStack(alignment: .top, spacing: 6) {
+                Text("•").font(font).foregroundStyle(color)
+                Text(inline(s)).font(font).foregroundStyle(color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.leading, 8)
+        case .numbered(let marker, let s):
+            HStack(alignment: .top, spacing: 6) {
+                Text(marker).font(font.weight(.semibold)).foregroundStyle(color)
+                Text(inline(s)).font(font).foregroundStyle(color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.leading, 8)
+        }
+    }
+
+    private func inline(_ s: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: s,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(s)
+    }
+}
+
 /// Launch / boot overlay shown while the worker starts and the client connects.
 struct BootstrapOverlay: View {
     @Environment(AppModel.self) private var app
@@ -127,7 +202,7 @@ struct BootstrapOverlay: View {
         ZStack {
             ZiggyBackground()
             VStack(spacing: 18) {
-                Text("Ziggy Notes")
+                Text("Ziggy Listens")
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(Theme.textPrimary)
 

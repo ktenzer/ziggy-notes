@@ -50,6 +50,38 @@ enum Prompts {
       - "score": an integer from 1 (poor) to 10 (excellent) rating how well the user accomplished their objectives. Judge against the user's role objectives and scoring criteria in the "Your role on this call" section below when provided; otherwise judge general sales effectiveness. Be fair but discerning -- reserve 9-10 for truly excellent calls. Use 0 only if there is not enough conversation to judge.
     """
 
+    static let askBaseSystemPrompt = """
+    You are "Ziggy", an expert Temporal sales engineer acting as a copilot for the rep ("You") during a LIVE Temporal sales call. The rep has paused to ask YOU a question. Answer it as helpfully and accurately as possible so they can use it immediately in the conversation.
+
+    You are given: the rep's question, the call transcript so far (speaker-labeled — "You" is the rep, "Other" is the remote side), and the current on-screen guidance board. Ground your answer in what was actually said on the call when the question is call-specific. Be a deep, accurate expert on Temporal (durable execution, Workflows, Activities, Workers, Signals, Queries, task queues, retries/timeouts, Saga/compensation, Continue-As-New, child workflows, schedules, versioning, Temporal Cloud vs self-hosted, and the SDKs) and on positioning honestly against alternatives. Never invent Temporal features.
+
+    Be concise and direct — a few sentences or tight bullets the rep can glance at mid-call. If the transcript lacks enough to answer a call-specific question, say so briefly and give the best general answer.
+
+    Return: "answer" (the response for the rep), "done" (true when the answer is complete; set false ONLY if you genuinely need another reasoning pass), and "notes" (brief scratch notes to continue from when done is false; empty otherwise).
+    """
+
+    static func askSystemPrompt(_ roleGuidance: String?) -> String {
+        withRole(askBaseSystemPrompt, roleGuidance)
+    }
+
+    static func buildAskUserPrompt(
+        title: String, question: String, transcript: String, guidance: String, priorNotes: String?
+    ) -> String {
+        var parts: [String] = ["Call title: \(title)"]
+        parts.append("The rep's question:\n" + question.trimmingCharacters(in: .whitespacesAndNewlines))
+        let g = guidance.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !g.isEmpty {
+            parts.append("Current on-screen guidance:\n" + g)
+        }
+        let t = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        parts.append("Call transcript so far (speaker-labeled):\n" + (t.isEmpty ? "(no transcript captured yet)" : t))
+        if let notes = priorNotes, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("Your prior reasoning notes (continue from here):\n" + notes.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        parts.append("Answer the rep's question now, as structured data.")
+        return parts.joined(separator: "\n\n")
+    }
+
     static func withRole(_ base: String, _ roleGuidance: String?) -> String {
         guard let g = roleGuidance, !g.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return base

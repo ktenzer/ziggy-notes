@@ -40,6 +40,25 @@ final class AppModel {
     /// Meeting the user is currently viewing live (active meeting screen).
     var activeMeetingId: String?
 
+    /// One "ask anything" question/answer exchange (in-memory, per live meeting).
+    struct AskExchange: Identifiable {
+        let id: UUID
+        let question: String
+        var answer: String
+        var pending: Bool
+    }
+    /// In-memory ask thread per meeting id (not persisted to the note).
+    var askThreads: [String: [AskExchange]] = [:]
+    /// True while an ask workflow is in flight for a meeting (blocks new questions).
+    var askPending: [String: Bool] = [:]
+    /// Monotonic per-meeting question counter, used to build the workflow id.
+    private var askSeq: [String: Int] = [:]
+
+    /// Suggestion ids the user dismissed locally. Kept so the 5s poll doesn't
+    /// flicker a dismissed card back before the workflow drops it, and so a second
+    /// "×" click can't fire a duplicate signal.
+    private var dismissedSuggestionIds: Set<String> = []
+
     private var modelContext: ModelContext?
     private var pollTask: Task<Void, Never>?
     private let pollInterval: Duration = .seconds(5)
@@ -169,7 +188,16 @@ final class AppModel {
     /// for the rest of the meeting. Server state stays authoritative via polling.
     func dismissSuggestion(_ meeting: MeetingRecord, _ suggestion: SuggestionRecord) async {
         let sid = suggestion.suggestionId
+        // Guard against double-dismiss: a second click (before the board refreshes)
+        // must not send another signal.
+        if !sid.isEmpty {
+            guard !dismissedSuggestionIds.contains(sid) else { return }
+            dismissedSuggestionIds.insert(sid)
+        }
+        // Remove immediately for instant feedback; the dismissed-id set keeps the
+        // poll from re-inserting it before the workflow drops it.
         meeting.suggestions.removeAll { $0 === suggestion }
+        modelContext?.delete(suggestion)
         try? modelContext?.save()
         guard !sid.isEmpty else { return }
         do {
@@ -179,6 +207,52 @@ final class AppModel {
                 banner = "Failed to dismiss suggestion: \(error)"
             }
         }
+    }
+
+    /// Ask Ziggy a free-form question about the live meeting. Runs a dedicated
+    /// ask workflow (signal-with-start), waits for its answer, and blocks further
+    /// questions for this meeting until it returns.
+    func ask(_ meeting: MeetingRecord, question: String) async {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        let mid = meeting.meetingId
+        guard askPending[mid] != true else { return }
+
+        let seq = (askSeq[mid] ?? 0) + 1
+        askSeq[mid] = seq
+        askPending[mid] = true
+
+        let exchangeId = UUID()
+        var thread = askThreads[mid] ?? []
+        thread.append(AskExchange(id: exchangeId, question: q, answer: "", pending: true))
+        askThreads[mid] = thread
+
+        // Snapshot transcript + guidance to ground the answer.
+        let transcript = meeting.transcriptText
+        let guidance = meeting.suggestions
+            .sorted { ($0.priorityRank, $0.createdAt) < ($1.priorityRank, $1.createdAt) }
+            .map { "- [\($0.priority)] (\($0.kind)) \($0.title): \($0.detail)" }
+            .joined(separator: "\n")
+
+        do {
+            let answer = try await client.askQuestion(
+                meetingId: mid, title: meeting.title, seq: seq,
+                question: q, transcript: transcript, guidance: guidance
+            )
+            updateExchange(mid, exchangeId, answer: answer, pending: false)
+        } catch {
+            updateExchange(mid, exchangeId,
+                           answer: "Sorry — I couldn't answer that right now (\(error)).",
+                           pending: false)
+        }
+        askPending[mid] = false
+    }
+
+    private func updateExchange(_ mid: String, _ id: UUID, answer: String, pending: Bool) {
+        guard var thread = askThreads[mid], let idx = thread.firstIndex(where: { $0.id == id }) else { return }
+        thread[idx].answer = answer
+        thread[idx].pending = pending
+        askThreads[mid] = thread
     }
 
     func stopMeeting(_ meeting: MeetingRecord, abort: Bool = false) async {
@@ -308,6 +382,9 @@ final class AppModel {
             }
             // Upsert the current board.
             for s in updates.suggestions {
+                // Don't resurrect a locally-dismissed card before the workflow
+                // catches up and stops returning it.
+                if !s.id.isEmpty, dismissedSuggestionIds.contains(s.id) { continue }
                 if let existing = meeting.suggestions.first(where: { $0.suggestionId == s.id && !s.id.isEmpty }) {
                     existing.kind = s.kind
                     existing.title = s.title

@@ -22,6 +22,9 @@ struct ZiggyActivities {
     private static let summaryHint = """
     {"summary": "string", "attendees": ["string"], "key_points": ["string"], "action_items": ["string"], "next_steps": ["string"], "feedback": "string", "score": 0}
     """
+    private static let answerHint = """
+    {"answer": "string", "done": true, "notes": "string"}
+    """
 
     // MARK: - LLM activities
 
@@ -69,6 +72,33 @@ struct ZiggyActivities {
             "summary produced: \(summary.attendees.count) attendee(s), \(summary.keyPoints.count) key point(s), \(summary.actionItems.count) action item(s), \(summary.nextSteps.count) next step(s), score=\(summary.score)"
         )
         return summary
+    }
+
+    /// Answers a user's "ask anything" question about the meeting, grounded in the
+    /// transcript + current guidance. One step of the ask workflow's agent loop.
+    @Activity(name: "answer_question")
+    func answerQuestion(input: AnswerInput) async throws -> AnswerResult {
+        let userPrompt = Prompts.buildAskUserPrompt(
+            title: input.title,
+            question: input.question,
+            transcript: input.transcript,
+            guidance: input.guidance,
+            priorNotes: input.priorNotes
+        )
+        let systemPrompt = Prompts.askSystemPrompt(RoleGuidance.load(config.role))
+        // Ask uses raw completion + lenient parse: an "ask anything" answer is
+        // free text, so if the model replies in prose/markdown instead of the
+        // requested JSON (it occasionally does for "summarize…"-style questions),
+        // we use that text as the answer rather than hard-failing the workflow.
+        let raw = try await llm.rawCompletion(
+            system: systemPrompt, user: userPrompt, jsonHint: Self.answerHint
+        )
+        let result = LLMClient.tolerantDecode(raw, as: AnswerResult.self)
+            ?? AnswerResult(answer: raw.trimmingCharacters(in: .whitespacesAndNewlines), done: true, notes: "")
+        ActivityExecutionContext.current?.logger.info(
+            "answer_question: done=\(result.done), \(result.answer.count) char answer"
+        )
+        return result
     }
 
     /// Writes the summary to a local Markdown file (Google Doc stub). Mirrors

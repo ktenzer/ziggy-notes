@@ -36,15 +36,24 @@ struct LLMClient: Sendable {
         system: String, user: String, jsonHint: String, as _: T.Type
     ) async throws -> T {
         let provider = try resolveProvider()
+        let raw = try await rawCompletion(system: system, user: user, jsonHint: jsonHint)
+        return try Self.decode(raw, provider: provider == "anthropic" ? "Anthropic" : "OpenAI")
+    }
+
+    /// Run a completion and return the model's raw text (no JSON decoding). Lets
+    /// callers that can tolerate free-form prose (e.g. the "ask anything" answer)
+    /// parse leniently instead of hard-failing when the model skips JSON.
+    func rawCompletion(system: String, user: String, jsonHint: String) async throws -> String {
+        let provider = try resolveProvider()
         if provider == "anthropic" {
-            return try await anthropic(system: system, user: user, jsonHint: jsonHint)
+            return try await anthropicText(system: system, user: user, jsonHint: jsonHint)
         }
-        return try await openAI(system: system, user: user, jsonHint: jsonHint)
+        return try await openAIText(system: system, user: user, jsonHint: jsonHint)
     }
 
     // MARK: - OpenAI
 
-    private func openAI<T: Decodable>(system: String, user: String, jsonHint: String) async throws -> T {
+    private func openAIText(system: String, user: String, jsonHint: String) async throws -> String {
         guard let key = config.openaiApiKey, !key.isEmpty else {
             throw ApplicationError(message: "OPENAI_API_KEY is not set", type: "NoLLMKey")
         }
@@ -83,12 +92,12 @@ struct LLMClient: Sendable {
                 type: "LLMError", isNonRetryable: true
             )
         }
-        return try Self.decode(content, provider: "OpenAI")
+        return content
     }
 
     // MARK: - Anthropic
 
-    private func anthropic<T: Decodable>(system: String, user: String, jsonHint: String) async throws -> T {
+    private func anthropicText(system: String, user: String, jsonHint: String) async throws -> String {
         guard let key = config.anthropicApiKey, !key.isEmpty else {
             throw ApplicationError(message: "ANTHROPIC_API_KEY is not set", type: "NoLLMKey")
         }
@@ -131,7 +140,7 @@ struct LLMClient: Sendable {
         }
         let text = blocks.compactMap { ($0["type"] as? String) == "text" ? $0["text"] as? String : nil }
             .joined()
-        return try Self.decode(text, provider: "Anthropic")
+        return text
     }
 
     // MARK: - Helpers
@@ -165,13 +174,7 @@ struct LLMClient: Sendable {
     }
 
     private static func decode<T: Decodable>(_ raw: String, provider: String) throws -> T {
-        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("```") {
-            text = text.replacingOccurrences(of: "`", with: "")
-            if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
-                text = String(text[start...end])
-            }
-        }
+        let text = extractJSON(raw)
         guard let data = text.data(using: .utf8) else {
             throw ApplicationError(message: "\(provider) returned undecodable text", type: "LLMError")
         }
@@ -180,5 +183,27 @@ struct LLMClient: Sendable {
         } catch {
             throw ApplicationError(message: "\(provider) returned non-conforming JSON: \(error)", type: "LLMError")
         }
+    }
+
+    /// Best-effort isolation of the JSON object from a model response. Strips
+    /// ```code fences``` and any surrounding prose/markdown by taking the span
+    /// from the first `{` to the last `}` — tolerating models that wrap the
+    /// object in explanation.
+    static func extractJSON(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("```") {
+            text = text.replacingOccurrences(of: "`", with: "")
+        }
+        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end {
+            text = String(text[start...end])
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Non-throwing decode for callers that can fall back to raw text when the
+    /// model doesn't return conforming JSON.
+    static func tolerantDecode<T: Decodable>(_ raw: String, as _: T.Type) -> T? {
+        guard let data = extractJSON(raw).data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
     }
 }
